@@ -69,6 +69,22 @@ const ORDER_LOG_URL =
   process.env.ORDER_LOG_URL ||
   "https://script.google.com/macros/s/AKfycbxDN366zqU5CevVUpFRvrFNQtw-cxAhADcxnX1HOGInwq7Ca3PJ6ie1JxOLkfzmLPaX/exec";
 
+// 【新增】"客户跟进"表的 Apps Script 网址，跟订单表是分开的一份独立脚本/分页，
+// 用来记录每个客户最后互动时间、是否同意接收推广消息，给下面的自动追单用。
+const FOLLOWUP_LOG_URL =
+  process.env.FOLLOWUP_LOG_URL ||
+  "https://script.google.com/macros/s/AKfycbxpW5nz3nH8TM1fUH5FXKE2U554aTw6WwuN8RSQjPlPgfyY99Y2GkMjFCpyql8CylBFyA/exec";
+
+// 追单用的已审核 WhatsApp 模板（送审通过后才能用，审核中不影响机器人其他功能）
+const FOLLOWUP_TEMPLATE_CONTENT_SID = {
+  zh: "HX31c732d09ef4384084b259f68296d8c5",
+  en: "HX7b4b1c0f8311c9aac246f7fd4368e357",
+  ms: "HX8dd203f33e8add317d7b96a836dd47cc",
+};
+const FOLLOWUP_GENERIC_PRODUCT = { zh: "我们的产品", en: "our products", ms: "produk kami" };
+const FOLLOWUP_SILENCE_MS = 24 * 60 * 60 * 1000; // 客户超过 24 小时没再互动才追
+const FOLLOWUP_CHECK_INTERVAL_MS = 60 * 60 * 1000; // 每小时扫一次该追谁
+
 // 满额赠品门槛（RM），跟 storeInfo.js 里跟客户说的规则要保持一致
 const GIFT_TIERS = [
   { minTotal: 150, zh: "沐浴露一瓶（赠品，随机口味）", en: "1 free shower gel (random scent)", ms: "1 gel mandi percuma (rasa rawak)" },
@@ -349,9 +365,9 @@ const CONFIRM_ORDER_TEXT = {
 };
 
 const ASK_FIELD_TEXT = {
-  zh: { name: "麻烦告诉我收货人姓名：", phoneConfirm: (n) => `用这个号码 ${n} 联系您可以吗？可以的话回复"可以"，不行的话直接发我另一个号码。`, address: "收货地址（门牌号、街道名）是？", city: "城市是？", postcode: "邮政编码是？", state: "州属是？", payment: "付款方式选哪个？回复 1 = 银行转账，2 = Touch 'n Go", invalidPostcode: "邮编看起来不太对，麻烦重新发一下（一般是 5 位数字）：", invalidPayment: "麻烦回复 1（银行转账）或 2（Touch 'n Go）哦。" },
-  en: { name: "What name should the order be under?", phoneConfirm: (n) => `Should I use ${n} to contact you? Reply "yes" if that's fine, or send me another number.`, address: "What's the delivery address (unit/house no., street)?", city: "Which city?", postcode: "Postcode?", state: "Which state?", payment: "Choose a payment method: reply 1 = Bank Transfer, 2 = Touch 'n Go", invalidPostcode: "That postcode doesn't look right, please resend it (usually 5 digits):", invalidPayment: "Please reply 1 (Bank Transfer) or 2 (Touch 'n Go)." },
-  ms: { name: "Atas nama siapa pesanan ini?", phoneConfirm: (n) => `Boleh saya gunakan ${n} untuk hubungi anda? Balas "boleh" jika ya, atau hantar nombor lain.`, address: "Alamat penghantaran (no. rumah, nama jalan)?", city: "Bandar?", postcode: "Poskod?", state: "Negeri?", payment: "Pilih kaedah pembayaran: balas 1 = Pindahan Bank, 2 = Touch 'n Go", invalidPostcode: "Poskod nampak tidak betul, sila hantar semula (biasanya 5 digit):", invalidPayment: "Sila balas 1 (Pindahan Bank) atau 2 (Touch 'n Go)." },
+  zh: { name: "麻烦告诉我收货人姓名：", phoneConfirm: (n) => `用这个号码 ${n} 联系您可以吗？可以的话回复"可以"，不行的话直接发我另一个号码。`, address: "收货地址（门牌号、街道名）是？", city: "城市是？", postcode: "邮政编码是？", state: "州属是？", payment: "付款方式选哪个？回复 1 = 银行转账，2 = Touch 'n Go", invalidPostcode: "邮编看起来不太对，麻烦重新发一下（一般是 5 位数字）：", invalidPayment: "麻烦回复 1（银行转账）或 2（Touch 'n Go）哦。", optIn: "最后一个小问题：以后想收到我们的优惠消息和新品通知吗？回复「要」或「不要」" },
+  en: { name: "What name should the order be under?", phoneConfirm: (n) => `Should I use ${n} to contact you? Reply "yes" if that's fine, or send me another number.`, address: "What's the delivery address (unit/house no., street)?", city: "Which city?", postcode: "Postcode?", state: "Which state?", payment: "Choose a payment method: reply 1 = Bank Transfer, 2 = Touch 'n Go", invalidPostcode: "That postcode doesn't look right, please resend it (usually 5 digits):", invalidPayment: "Please reply 1 (Bank Transfer) or 2 (Touch 'n Go).", optIn: "One last thing: would you like to receive future promotions and new arrivals from us? Reply \"yes\" or \"no\"" },
+  ms: { name: "Atas nama siapa pesanan ini?", phoneConfirm: (n) => `Boleh saya gunakan ${n} untuk hubungi anda? Balas "boleh" jika ya, atau hantar nombor lain.`, address: "Alamat penghantaran (no. rumah, nama jalan)?", city: "Bandar?", postcode: "Poskod?", state: "Negeri?", payment: "Pilih kaedah pembayaran: balas 1 = Pindahan Bank, 2 = Touch 'n Go", invalidPostcode: "Poskod nampak tidak betul, sila hantar semula (biasanya 5 digit):", invalidPayment: "Sila balas 1 (Pindahan Bank) atau 2 (Touch 'n Go).", optIn: "Satu soalan terakhir: adakah anda mahu menerima promosi dan produk baharu daripada kami pada masa hadapan? Balas \"ya\" atau \"tidak\"" },
 };
 
 const ORDER_CANCELLED_TEXT = {
@@ -452,7 +468,14 @@ async function handleOrderStep(fromNumber, message) {
       if (t.includes("1") || t.includes("bank") || t.includes("银行") || t.includes("pindahan")) payMethod = "bank";
       else if (t.includes("2") || t.includes("tng") || t.includes("touch")) payMethod = "tng";
       if (!payMethod) return ASK_FIELD_TEXT[lang].invalidPayment;
-      return finalizeOrder(fromNumber, payMethod);
+      session.payMethod = payMethod;
+      session.step = "optin";
+      return ASK_FIELD_TEXT[lang].optIn;
+    }
+
+    case "optin": {
+      session.optIn = textIncludesAny(message, AFFIRMATIVE_WORDS);
+      return finalizeOrder(fromNumber, session.payMethod);
     }
 
     default:
@@ -493,7 +516,71 @@ async function finalizeOrder(fromNumber, payMethod) {
   }
 
   delete orderSessions[fromNumber];
+  touchFollowUp(session.phone, session.name, "已下单", lang, session.optIn);
   return ORDER_DONE_TEXT[lang](orderNo, payMethod);
+}
+
+/**
+ * 记录/更新客户在「客户跟进」表里的状态（最后互动时间、聊到哪一步、是否同意推广），
+ * 给以后的自动追单用。失败不影响机器人正常回复，静默失败即可。
+ */
+async function touchFollowUp(phone, name, stage, lang, optIn) {
+  if (!FOLLOWUP_LOG_URL || !phone) return;
+  try {
+    const payload = { phone, stage, lang };
+    if (name) payload.name = name;
+    if (typeof optIn === "boolean") payload.optIn = optIn;
+    await fetch(FOLLOWUP_LOG_URL, { method: "POST", body: JSON.stringify(payload) });
+  } catch (err) {
+    console.error("⚠️ 记录客户跟进状态失败：", err.message);
+  }
+}
+
+/**
+ * 每小时跑一次：找出「已同意接收推广、超过 24 小时没再互动、还没下单、还没追过」的客户，
+ * 发送已审核的追单模板消息。模板还在审核中时 FOLLOWUP_TEMPLATE_CONTENT_SID 对应语言会是空，
+ * 这种情况直接跳过，不会报错。
+ */
+async function checkAndSendFollowUps() {
+  if (!FOLLOWUP_LOG_URL) return;
+  try {
+    const res = await fetch(FOLLOWUP_LOG_URL);
+    const rows = await res.json();
+    const now = Date.now();
+
+    for (const row of rows) {
+      if (row["已同意推广"] !== "是") continue;
+      if (row["已追单"] === "是") continue;
+      if (row["阶段"] === "已下单") continue;
+
+      const lastTime = new Date(row["最后互动时间"]).getTime();
+      if (isNaN(lastTime) || now - lastTime < FOLLOWUP_SILENCE_MS) continue;
+
+      const phone = row["手机号"];
+      const lang = FOLLOWUP_TEMPLATE_CONTENT_SID[row["语言"]] ? row["语言"] : "en";
+      const contentSid = FOLLOWUP_TEMPLATE_CONTENT_SID[lang];
+      if (!contentSid) continue; // 该语言的模板还没审核通过
+
+      const toNumber = phone.startsWith("whatsapp:") ? phone : `whatsapp:${phone}`;
+      try {
+        await twilioClient.messages.create({
+          from: process.env.TWILIO_WHATSAPP_FROM,
+          to: toNumber,
+          contentSid,
+          contentVariables: JSON.stringify({
+            "1": row["姓名"] || (lang === "zh" ? "您好" : "there"),
+            "2": FOLLOWUP_GENERIC_PRODUCT[lang],
+          }),
+        });
+        await fetch(FOLLOWUP_LOG_URL, { method: "POST", body: JSON.stringify({ phone, action: "markFollowedUp" }) });
+        console.log(`✅ 已发送追单消息给 ${toNumber}`);
+      } catch (err) {
+        console.error(`❌ 发送追单消息失败（${phone}）：`, err.message);
+      }
+    }
+  } catch (err) {
+    console.error("⚠️ 检查追单名单失败：", err.message);
+  }
 }
 
 app.get("/", (req, res) => {
@@ -539,6 +626,8 @@ app.post("/webhook/whatsapp", validateTwilioRequest, async (req, res) => {
 
   console.log(`📩 收到来自 ${fromNumber} 的消息：${incomingMessage}`);
 
+  touchFollowUp(fromNumber.replace("whatsapp:", ""), null, "咨询中", detectLang(incomingMessage));
+
   let replyText;
 
   if (wantsHuman(incomingMessage)) {
@@ -578,4 +667,5 @@ app.listen(PORT, () => {
   if (!process.env.ORDERS_SHEET_URL) {
     console.warn("ℹ️ 还没有配置 ORDERS_SHEET_URL，客户问「我下的是什么订单」时 AI 查不到具体订单记录。");
   }
+  setInterval(checkAndSendFollowUps, FOLLOWUP_CHECK_INTERVAL_MS);
 });
