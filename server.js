@@ -136,6 +136,36 @@ const ORDER_TOOL = {
 // 重启服务会清空所有进行中的下单流程——量不大，先用内存做，先跑起来比较重要。
 const orderSessions = {};
 
+// 【新增】每个客户最近几轮对话记录（按手机号存内存里），让 AI 记得上一句聊了什么——
+// 比如客户先发一张产品截图，隔一句才问"这是新款吗"，AI 也能接得上。
+// 只留最近几轮，避免无限增长；重启服务会清空，不影响正常使用。
+const conversationHistory = {};
+const MAX_HISTORY_TURNS = 6; // 保留最近 6 条（客户+AI 加起来），约 3 轮对话
+
+function pushHistory(fromNumber, role, text) {
+  if (!conversationHistory[fromNumber]) conversationHistory[fromNumber] = [];
+  const history = conversationHistory[fromNumber];
+  history.push({ role, content: text });
+  while (history.length > MAX_HISTORY_TURNS) history.shift();
+}
+
+/**
+ * 下载客户在 WhatsApp 发来的图片，转成 Claude 能看懂的 base64 格式。
+ * Twilio 的媒体链接需要账号认证才能下载，失败时返回 null，调用方会降级为纯文字处理。
+ */
+async function fetchImageAsBase64(url) {
+  try {
+    const auth = Buffer.from(`${process.env.TWILIO_ACCOUNT_SID}:${process.env.TWILIO_AUTH_TOKEN}`).toString("base64");
+    const res = await fetch(url, { headers: { Authorization: `Basic ${auth}` } });
+    if (!res.ok) return null;
+    const buf = Buffer.from(await res.arrayBuffer());
+    return buf.toString("base64");
+  } catch (err) {
+    console.error("⚠️ 下载客户发来的图片失败：", err.message);
+    return null;
+  }
+}
+
 const AFFIRMATIVE_WORDS = ["是", "要", "可以", "好", "确认", "对", "行", "ok", "okay", "yes", "sure", "confirm", "ya", "boleh", "baik", "sahkan"];
 const NEGATIVE_WORDS = ["不要", "不用", "算了", "取消", "先不", "no", "cancel", "nevermind", "tidak", "batal"];
 
@@ -261,7 +291,7 @@ const LANG_LABELS = { zh: "中文", en: "英文 (English)", ms: "马来文 (Baha
  * 客户明确确认要下单时，AI 会调用 start_order 工具，这时返回 { type: "start_order", items }
  * 而不是普通文字，由调用方接管后续的下单流程。
  */
-async function getAiReply(userMessage, fromNumber) {
+async function getAiReply(userMessage, fromNumber, media) {
   try {
     const [sheetContext, ordersContext] = await Promise.all([
       getSheetContext(),
@@ -270,25 +300,48 @@ async function getAiReply(userMessage, fromNumber) {
     let systemPrompt = STORE_INFO;
     if (sheetContext) systemPrompt += `\n\n${sheetContext}`;
     if (ordersContext) systemPrompt += `\n\n${ordersContext}`;
+    systemPrompt +=
+      "\n\n【关于图片】如果客户发的消息里带了图片，你能直接看到图片内容，可以结合上面的产品清单判断客户问的是哪一款、回答关于这张图片的问题（比如新旧款、价格、是否有货），不需要再反问客户是哪一款产品。";
 
     const detectedLang = LANG_LABELS[detectLang(userMessage)];
     systemPrompt += `\n\n【重要，务必遵守】客户这条消息使用的语言判断为：${detectedLang}。请只用这个语言回复，不要混用其他语言，也不要用中文回复英文/马来文客户。`;
+
+    const userContent = [];
+    let historyText = userMessage;
+    if (media && media.contentType && media.contentType.startsWith("image/")) {
+      const imageBase64 = await fetchImageAsBase64(media.url);
+      if (imageBase64) {
+        userContent.push({ type: "image", source: { type: "base64", media_type: media.contentType, data: imageBase64 } });
+        historyText = `[客户发了一张图片] ${userMessage}`.trim();
+      }
+    }
+    userContent.push({ type: "text", text: userMessage || "（客户发了一张图片，没有配文字说明）" });
+
+    const history = conversationHistory[fromNumber] || [];
+    const messages = [...history.map((h) => ({ role: h.role, content: h.content })), { role: "user", content: userContent }];
 
     const response = await anthropic.messages.create({
       model: AI_MODEL,
       max_tokens: 300,
       system: systemPrompt,
-      messages: [{ role: "user", content: userMessage }],
+      messages,
       tools: [ORDER_TOOL],
     });
 
     const toolBlock = response.content.find((block) => block.type === "tool_use" && block.name === "start_order");
     if (toolBlock) {
+      pushHistory(fromNumber, "user", historyText);
+      pushHistory(fromNumber, "assistant", "（帮客户下单中）");
       return { type: "start_order", items: toolBlock.input.items || [] };
     }
 
     const textBlock = response.content.find((block) => block.type === "text");
-    return textBlock ? { type: "text", text: textBlock.text.trim() } : null;
+    const replyText = textBlock ? textBlock.text.trim() : null;
+    if (replyText) {
+      pushHistory(fromNumber, "user", historyText);
+      pushHistory(fromNumber, "assistant", replyText);
+    }
+    return replyText ? { type: "text", text: replyText } : null;
   } catch (err) {
     console.error("❌ 调用 Claude API 失败：", err.message);
     return null;
@@ -623,8 +676,10 @@ app.post("/api/order-notify", async (req, res) => {
 app.post("/webhook/whatsapp", validateTwilioRequest, async (req, res) => {
   const incomingMessage = req.body.Body || "";
   const fromNumber = req.body.From || "unknown";
+  const numMedia = parseInt(req.body.NumMedia || "0", 10);
+  const media = numMedia > 0 ? { url: req.body.MediaUrl0, contentType: req.body.MediaContentType0 } : null;
 
-  console.log(`📩 收到来自 ${fromNumber} 的消息：${incomingMessage}`);
+  console.log(`📩 收到来自 ${fromNumber} 的消息：${incomingMessage}${media ? `（带${numMedia}个附件，类型：${media.contentType}）` : ""}`);
 
   touchFollowUp(fromNumber.replace("whatsapp:", ""), null, "咨询中", detectLang(incomingMessage));
 
@@ -637,7 +692,7 @@ app.post("/webhook/whatsapp", validateTwilioRequest, async (req, res) => {
   } else if (orderSessions[fromNumber]) {
     replyText = (await handleOrderStep(fromNumber, incomingMessage)) || DEFAULT_REPLY;
   } else {
-    const aiReply = await getAiReply(incomingMessage, fromNumber);
+    const aiReply = await getAiReply(incomingMessage, fromNumber, media);
     if (aiReply && aiReply.type === "start_order") {
       replyText = await beginOrderFlow(fromNumber, aiReply.items, detectLang(incomingMessage));
     } else {
