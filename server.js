@@ -120,7 +120,7 @@ const ORDER_TOOL = {
 // 重启服务会清空所有进行中的下单流程——量不大，先用内存做，先跑起来比较重要。
 const orderSessions = {};
 
-const AFFIRMATIVE_WORDS = ["是", "要", "可以", "好", "确认", "对", "行", "ok", "okay", "yes", "sure", "y", "ya", "boleh", "baik"];
+const AFFIRMATIVE_WORDS = ["是", "要", "可以", "好", "确认", "对", "行", "ok", "okay", "yes", "sure", "confirm", "ya", "boleh", "baik", "sahkan"];
 const NEGATIVE_WORDS = ["不要", "不用", "算了", "取消", "先不", "no", "cancel", "nevermind", "tidak", "batal"];
 
 function textIncludesAny(text, words) {
