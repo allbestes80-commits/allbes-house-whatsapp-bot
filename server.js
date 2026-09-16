@@ -1,5 +1,5 @@
 // server.js
-// Allbes House WhatsApp 客服机器人 —— AI 智能回复版本（+ Google Sheets 动态资料）
+// Lumee Store WhatsApp 客服机器人 —— AI 智能回复版本（+ Google Sheets 动态资料）
 //
 // 工作流程：
 //   1. 客户在 WhatsApp 上给您的 Twilio 号码发消息（任何语言都可以）
@@ -55,7 +55,7 @@ const anthropic = new Anthropic({
 const AI_MODEL = "claude-haiku-4-5-20251001"; // 速度快、成本低，适合简单客服问答
 
 const DEFAULT_REPLY =
-  "您好！欢迎联系 Allbes House 客服 🙂 我们已收到您的消息，客服会尽快为您处理。";
+  "您好！欢迎联系 Lumee Store 客服 🙂 我们已收到您的消息，客服会尽快为您处理。";
 
 const TRANSFER_TO_HUMAN_KEYWORDS = [
   "人工", "真人", "转人工",
@@ -637,7 +637,7 @@ async function checkAndSendFollowUps() {
 }
 
 app.get("/", (req, res) => {
-  res.send("✅ Allbes House WhatsApp 机器人正在运行（AI 智能回复版 + Google Sheets）");
+  res.send("✅ Lumee Store WhatsApp 机器人正在运行（AI 智能回复版 + Google Sheets）");
 });
 
 // 【新增】网站下单后调用这个接口，自动给客人发付款提醒模板消息
