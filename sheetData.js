@@ -29,6 +29,7 @@ const FAQ_CSV_URL = process.env.FAQ_SHEET_URL || "";
 
 const CACHE_TTL_MS = 5 * 60 * 1000; // 5 分钟缓存，避免每条消息都重新拉取表格
 let cache = { text: "", fetchedAt: 0 };
+let productsCache = { rows: [], fetchedAt: 0 };
 
 async function fetchCsv(url) {
   if (!url) return [];
@@ -52,18 +53,20 @@ function getField(row, keys) {
   return "";
 }
 
+function toProductRecord(r) {
+  return {
+    name: getField(r, ["商品名", "Product Name", "Name"]),
+    size: getField(r, ["规格", "Size"]),
+    price: getField(r, ["价格 / Price", "价格", "Price"]),
+    series: getField(r, ["系列", "Series"]),
+    category: getField(r, ["分类", "Category"]),
+    desc: getField(r, ["卖点描述 / 卖点 / Description", "卖点描述", "卖点", "Description"]),
+    stock: getField(r, ["库存 / Stock", "库存", "Stock"]),
+  };
+}
+
 function formatProducts(rows) {
-  const withName = rows
-    .map((r) => ({
-      name: getField(r, ["商品名", "Product Name", "Name"]),
-      size: getField(r, ["规格", "Size"]),
-      price: getField(r, ["价格 / Price", "价格", "Price"]),
-      series: getField(r, ["系列", "Series"]),
-      category: getField(r, ["分类", "Category"]),
-      desc: getField(r, ["卖点描述 / 卖点 / Description", "卖点描述", "卖点", "Description"]),
-      stock: getField(r, ["库存 / Stock", "库存", "Stock"]),
-    }))
-    .filter((p) => p.name);
+  const withName = rows.map(toProductRecord).filter((p) => p.name);
 
   if (!withName.length) return "";
 
@@ -121,4 +124,24 @@ async function getSheetContext() {
   }
 }
 
-module.exports = { getSheetContext };
+/**
+ * 获取结构化的商品列表（名称/价格/库存等），带缓存。
+ * 给"WhatsApp 内直接下单"功能用来匹配客户说的商品名、算金额，
+ * 跟 getSheetContext() 用的是同一份表格数据，只是这里要的是结构化数据而不是拼好的文字。
+ */
+async function getProducts() {
+  const now = Date.now();
+  if (productsCache.rows.length && now - productsCache.fetchedAt < CACHE_TTL_MS) {
+    return productsCache.rows;
+  }
+  try {
+    const rows = (await fetchCsv(PRODUCTS_CSV_URL)).map(toProductRecord).filter((p) => p.name);
+    productsCache = { rows, fetchedAt: now };
+    return rows;
+  } catch (err) {
+    console.error("⚠️ 读取商品表格失败，本次先用旧缓存：", err.message);
+    return productsCache.rows;
+  }
+}
+
+module.exports = { getSheetContext, getProducts };
