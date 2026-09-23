@@ -243,7 +243,7 @@ function summarizeItems(items) {
 // 客户把验证码抄回网站完成验证。因为是客户先发消息触发的回复，
 // 不需要走 WhatsApp 审核模板那一套。
 const otpSessions = {}; // 手机号末9位 -> { code, expiresAt }
-const OTP_TTL_MS = 5 * 60 * 1000; // 验证码 5 分钟内有效
+const OTP_TTL_MS = 10 * 60 * 1000; // 验证码 10 分钟内有效（手机上跳转 WhatsApp 再切回网页需要一点时间）
 const LOGIN_TRIGGER_RE = /^LUMEE-LOGIN(-(ZH|EN|MS))?$/i;
 
 function normalizePhoneLast9(p) {
