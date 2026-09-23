@@ -238,6 +238,26 @@ function summarizeItems(items) {
   return items.map((i) => `${i.name} x${i.qty}`).join(", ");
 }
 
+// 【新增】网站"验证手机号登录"用的验证码。客户在网站填手机号后，
+// 点按钮跳去 WhatsApp 发一句固定暗号（LUMEE-LOGIN），机器人立刻回复验证码，
+// 客户把验证码抄回网站完成验证。因为是客户先发消息触发的回复，
+// 不需要走 WhatsApp 审核模板那一套。
+const otpSessions = {}; // 手机号末9位 -> { code, expiresAt }
+const OTP_TTL_MS = 5 * 60 * 1000; // 验证码 5 分钟内有效
+const LOGIN_TRIGGER_RE = /^LUMEE-LOGIN(-(ZH|EN|MS))?$/i;
+
+function normalizePhoneLast9(p) {
+  return String(p || "").replace(/\D/g, "").slice(-9);
+}
+function generateOtpCode() {
+  return String(Math.floor(100000 + Math.random() * 900000));
+}
+const OTP_REPLY_TEXT = {
+  zh: (code) => `您的登录验证码是：${code}\n5 分钟内有效，请回到网站输入完成验证。`,
+  en: (code) => `Your login verification code is: ${code}\nValid for 5 minutes — enter it on the website to finish verifying.`,
+  ms: (code) => `Kod pengesahan log masuk anda ialah: ${code}\nSah selama 5 minit — masukkan di laman web untuk sahkan.`,
+};
+
 const HUMAN_BACKUP_NUMBER = "+60138916812";
 const TRANSFER_TO_HUMAN_REPLY = {
   zh: `好的，已为您转接人工客服。人工客服可能需要一些时间才能回复，如果比较着急，也可以直接联系这个号码：${HUMAN_BACKUP_NUMBER}`,
@@ -673,6 +693,27 @@ app.post("/api/order-notify", async (req, res) => {
   }
 });
 
+// 【新增】网站登录验证：客户把从 WhatsApp 收到的验证码提交过来，这里核对是否正确。
+// 网站需要 POST 这样的内容：{ phone, code }，phone 要带国家码，例如 "+60123456789"
+app.post("/api/otp-verify", (req, res) => {
+  const { phone, code } = req.body || {};
+  if (!phone || !code) {
+    return res.status(400).json({ error: "缺少必要参数：phone 或 code" });
+  }
+  const phoneKey = normalizePhoneLast9(phone);
+  const session = otpSessions[phoneKey];
+  if (!session || session.expiresAt < Date.now()) {
+    delete otpSessions[phoneKey];
+    return res.status(400).json({ error: "验证码已过期或还没获取，请重新在 WhatsApp 获取一次" });
+  }
+  if (String(session.code) !== String(code).trim()) {
+    return res.status(400).json({ error: "验证码不正确，请重新输入" });
+  }
+  delete otpSessions[phoneKey];
+  touchFollowUp(phone, null, "已验证登录", null);
+  res.json({ result: "success" });
+});
+
 app.post("/webhook/whatsapp", validateTwilioRequest, async (req, res) => {
   const incomingMessage = req.body.Body || "";
   const fromNumber = req.body.From || "unknown";
@@ -680,6 +721,19 @@ app.post("/webhook/whatsapp", validateTwilioRequest, async (req, res) => {
   const media = numMedia > 0 ? { url: req.body.MediaUrl0, contentType: req.body.MediaContentType0 } : null;
 
   console.log(`📩 收到来自 ${fromNumber} 的消息：${incomingMessage}${media ? `（带${numMedia}个附件，类型：${media.contentType}）` : ""}`);
+
+  // 网站"验证手机号登录"的暗号，直接回验证码，不走 AI、不占用下单流程
+  const loginMatch = incomingMessage.trim().match(LOGIN_TRIGGER_RE);
+  if (loginMatch) {
+    const lang = ["zh", "en", "ms"].includes((loginMatch[2] || "").toLowerCase()) ? loginMatch[2].toLowerCase() : "zh";
+    const phoneKey = normalizePhoneLast9(fromNumber);
+    const code = generateOtpCode();
+    otpSessions[phoneKey] = { code, expiresAt: Date.now() + OTP_TTL_MS };
+    console.log(`🔑 已生成登录验证码给 ${fromNumber}`);
+    const twiml = new twilio.twiml.MessagingResponse();
+    twiml.message(OTP_REPLY_TEXT[lang](code));
+    return res.type("text/xml").send(twiml.toString());
+  }
 
   touchFollowUp(fromNumber.replace("whatsapp:", ""), null, "咨询中", detectLang(incomingMessage));
 
