@@ -694,24 +694,35 @@ app.post("/api/order-notify", async (req, res) => {
 });
 
 // 【新增】网站登录验证：客户把从 WhatsApp 收到的验证码提交过来，这里核对是否正确。
-// 网站需要 POST 这样的内容：{ phone, code }，phone 要带国家码，例如 "+60123456789"
+// 网站只需要 POST { code }——按验证码本身查找会话，不要求客户另外填的号码
+// 跟他 WhatsApp 实际登录的号码一致（这两个经常对不上，之前就是这样导致验证一直失败）。
+// 验证码本身是 6 位随机数 + 10 分钟有效期 + 一次性使用，作为凭证已经足够。
 app.post("/api/otp-verify", (req, res) => {
-  const { phone, code } = req.body || {};
-  if (!phone || !code) {
-    return res.status(400).json({ error: "缺少必要参数：phone 或 code" });
+  const { code } = req.body || {};
+  if (!code) {
+    return res.status(400).json({ error: "缺少必要参数：code" });
   }
-  const phoneKey = normalizePhoneLast9(phone);
-  const session = otpSessions[phoneKey];
-  if (!session || session.expiresAt < Date.now()) {
-    delete otpSessions[phoneKey];
-    return res.status(400).json({ error: "验证码已过期或还没获取，请重新在 WhatsApp 获取一次" });
+  const trimmedCode = String(code).trim();
+  const now = Date.now();
+  let matchedKey = null;
+  for (const key of Object.keys(otpSessions)) {
+    const session = otpSessions[key];
+    if (session.expiresAt < now) {
+      delete otpSessions[key];
+      continue;
+    }
+    if (String(session.code) === trimmedCode) {
+      matchedKey = key;
+      break;
+    }
   }
-  if (String(session.code) !== String(code).trim()) {
-    return res.status(400).json({ error: "验证码不正确，请重新输入" });
+  if (!matchedKey) {
+    return res.status(400).json({ error: "验证码不正确或已过期，请重新在 WhatsApp 获取一次" });
   }
-  delete otpSessions[phoneKey];
-  touchFollowUp(phone, null, "已验证登录", null);
-  res.json({ result: "success" });
+  const verifiedPhone = otpSessions[matchedKey].phone;
+  delete otpSessions[matchedKey];
+  touchFollowUp(verifiedPhone, null, "已验证登录", null);
+  res.json({ result: "success", phone: verifiedPhone });
 });
 
 app.post("/webhook/whatsapp", validateTwilioRequest, async (req, res) => {
@@ -728,7 +739,7 @@ app.post("/webhook/whatsapp", validateTwilioRequest, async (req, res) => {
     const lang = ["zh", "en", "ms"].includes((loginMatch[2] || "").toLowerCase()) ? loginMatch[2].toLowerCase() : "zh";
     const phoneKey = normalizePhoneLast9(fromNumber);
     const code = generateOtpCode();
-    otpSessions[phoneKey] = { code, expiresAt: Date.now() + OTP_TTL_MS };
+    otpSessions[phoneKey] = { code, expiresAt: Date.now() + OTP_TTL_MS, phone: fromNumber.replace(/^whatsapp:/i, "") };
     console.log(`🔑 已生成登录验证码给 ${fromNumber}`);
     const twiml = new twilio.twiml.MessagingResponse();
     twiml.message(OTP_REPLY_TEXT[lang](code));
