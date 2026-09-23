@@ -83,6 +83,23 @@ const FOLLOWUP_TEMPLATE_CONTENT_SID = {
 };
 const FOLLOWUP_GENERIC_PRODUCT = { zh: "我们的产品", en: "our products", ms: "produk kami" };
 const FOLLOWUP_SILENCE_MS = 24 * 60 * 60 * 1000; // 客户超过 24 小时没再互动才追
+
+// 促销广播用的已审核 WhatsApp 模板（Marketing 分类，已送审）。
+// 用法：等审核通过后（可以查 GET https://content.twilio.com/v1/Content/{sid}/ApprovalRequests 看状态），
+// 对已经「已同意推广」的客户逐个调用：
+//   twilioClient.messages.create({
+//     from: process.env.TWILIO_WHATSAPP_FROM,
+//     to: `whatsapp:${客户手机号}`,
+//     contentSid: MARKETING_TEMPLATE_CONTENT_SID[lang],
+//     contentVariables: JSON.stringify({ "1": 客户姓名或"您好", "2": "这次优惠的具体内容" }),
+//   });
+// 客户名单（已验证手机号 + 已同意推广）可以从 FOLLOWUP_LOG_URL 这个 Google Sheet 里筛「已同意推广」="是" 的行拿到，
+// 跟 checkAndSendFollowUps() 现在筛客户名单的方式是同一张表、同一个逻辑。
+const MARKETING_TEMPLATE_CONTENT_SID = {
+  zh: "HX368e0677552b5b03bbdb5a35c37fd3a2",
+  en: "HXcabe90ae61315ff97deeff8d81c351d7",
+  ms: "HX7c2388a23011e5f2f7d7ab3542aa6bf8",
+};
 const FOLLOWUP_CHECK_INTERVAL_MS = 60 * 60 * 1000; // 每小时扫一次该追谁
 
 // 满额赠品门槛（RM），跟 storeInfo.js 里跟客户说的规则要保持一致
