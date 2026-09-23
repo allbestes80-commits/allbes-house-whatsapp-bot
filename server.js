@@ -275,6 +275,38 @@ const OTP_REPLY_TEXT = {
   ms: (code) => `Kod pengesahan log masuk anda ialah: ${code}\nSah selama 5 minit — masukkan di laman web untuk sahkan.`,
 };
 
+// 【新增】订货运输系统的订单查询：客户发「查询 ZH…」时，去订货系统查物流状态并原样回复。
+// ZH 开头的是订货运输系统的订单号（本机器人自己 WhatsApp 下单用的是 AH 开头，互不影响）。
+// 订货系统会核对发件号码是不是下单时填的号码，不是本人的话只回一句提示，不泄露订单内容。
+const ORDER_QUERY_RE = /^查询\s*(ZH\S*)/i;
+const PROCUREMENT_API_URL = process.env.PROCUREMENT_API_URL; // 订货系统网址，如 https://xxx.up.railway.app
+const PROCUREMENT_API_KEY = process.env.PROCUREMENT_API_KEY; // 跟订货系统的 INTEGRATION_API_KEY 同一个值
+const ORDER_QUERY_UNAVAILABLE = "订单查询暂时不可用，请稍后再试，或回复「人工」联系客服。";
+
+async function queryProcurementOrder(orderNo, fromNumber) {
+  if (!PROCUREMENT_API_URL || !PROCUREMENT_API_KEY) {
+    console.warn("⚠️ 没有配置 PROCUREMENT_API_URL / PROCUREMENT_API_KEY，无法查询 ZH 订单");
+    return ORDER_QUERY_UNAVAILABLE;
+  }
+  try {
+    const res = await fetch(`${PROCUREMENT_API_URL.replace(/\/$/, "")}/api/integrations/whatsapp/order-status`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${PROCUREMENT_API_KEY}` },
+      body: JSON.stringify({ order_no: orderNo, whatsapp_from: fromNumber }),
+      signal: AbortSignal.timeout(8000), // Twilio 等回复最多 15 秒，留出余量
+    });
+    if (!res.ok) {
+      console.error(`❌ 订货系统查询失败：HTTP ${res.status}`);
+      return ORDER_QUERY_UNAVAILABLE;
+    }
+    const data = await res.json();
+    return data.reply || ORDER_QUERY_UNAVAILABLE;
+  } catch (err) {
+    console.error("❌ 调用订货系统查询订单失败：", err.message);
+    return ORDER_QUERY_UNAVAILABLE;
+  }
+}
+
 const HUMAN_BACKUP_NUMBER = "+60138916812";
 const TRANSFER_TO_HUMAN_REPLY = {
   zh: `好的，已为您转接人工客服。人工客服可能需要一些时间才能回复，如果比较着急，也可以直接联系这个号码：${HUMAN_BACKUP_NUMBER}`,
@@ -762,6 +794,16 @@ app.post("/webhook/whatsapp", validateTwilioRequest, async (req, res) => {
   const media = numMedia > 0 ? { url: req.body.MediaUrl0, contentType: req.body.MediaContentType0 } : null;
 
   console.log(`📩 收到来自 ${fromNumber} 的消息：${incomingMessage}${media ? `（带${numMedia}个附件，类型：${media.contentType}）` : ""}`);
+
+  // 【新增】「查询 ZH…」开头：去订货运输系统查订单状态，不走 AI、不影响进行中的下单流程
+  const orderQueryMatch = incomingMessage.trim().match(ORDER_QUERY_RE);
+  if (orderQueryMatch) {
+    const reply = await queryProcurementOrder(orderQueryMatch[1].toUpperCase(), fromNumber);
+    console.log(`📦 ZH 订单查询 ${orderQueryMatch[1]} 已回复`);
+    const twiml = new twilio.twiml.MessagingResponse();
+    twiml.message(reply);
+    return res.type("text/xml").send(twiml.toString());
+  }
 
   // 网站"验证手机号登录"的暗号，直接回验证码，不走 AI、不占用下单流程
   const loginMatch = incomingMessage.trim().match(LOGIN_TRIGGER_RE);
