@@ -725,6 +725,19 @@ app.post("/api/otp-verify", (req, res) => {
   res.json({ result: "success", phone: verifiedPhone });
 });
 
+// 【新增】客户验证手机号之后，单独问一句是否愿意接收促销信息，记录到"客户跟进"表格的
+// 「已同意推广」字段。跟手机号验证本身分开：验证只代表"这是你的真实号码"，
+// 不代表"同意收到广告"，要客户自己选了愿意才算数。
+// 网站需要 POST 这样的内容：{ phone, optIn }，phone 带国家码，optIn 是 true/false
+app.post("/api/marketing-optin", (req, res) => {
+  const { phone, optIn } = req.body || {};
+  if (!phone || typeof optIn !== "boolean") {
+    return res.status(400).json({ error: "缺少必要参数：phone 或 optIn" });
+  }
+  touchFollowUp(phone, null, undefined, undefined, optIn);
+  res.json({ result: "success" });
+});
+
 app.post("/webhook/whatsapp", validateTwilioRequest, async (req, res) => {
   const incomingMessage = req.body.Body || "";
   const fromNumber = req.body.From || "unknown";
