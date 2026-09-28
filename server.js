@@ -49,12 +49,14 @@ const ORDER_REMINDER_CONTENT_SID = {
   ms: "HX636a86cc3cf07a0dbc30087e80ec9e1d",
 };
 
-// 【新增】网站下单的付款链接通知模板（已改成 ToyyibPay 链接，不再是银行转账/TnG 说明，
-// 模板内容变了所以是全新送审的模板，跟上面 ORDER_REMINDER_CONTENT_SID 不是同一个）。
+// 【新增】网站下单的付款链接通知模板——用 twilio/call-to-action 按钮而不是纯文字链接，
+// 因为纯文字带链接的模板 WhatsApp 会自动归类成 Marketing 然后拒审（试了两次都这样），
+// 按钮里的链接变量只需要传 billCode（不是完整网址），网址前缀是模板里写死的
+// https://dev.toyyibpay.com/ —— 换正式环境时这个模板要重新建一个（网址前缀会变成 toyyibpay.com）。
 const ORDER_PAYMENT_CONTENT_SID = {
-  zh: "HX72ad321236125c8adf488f2a217bea28",
-  en: "HXe885da016136b596cb115d3cf1e5a687",
-  ms: "HXfbcf80cb779b9004208b3b0826753acd",
+  zh: "HXd1ebdec8e8a4e3a1dea8e882f0c98808",
+  en: "HXdba9de16b938ef120e3adf9e37262d5b",
+  ms: "HX314c67833569d08fb68d2ad8024c5609",
 };
 
 // 【新增】ToyyibPay 收款网关配置。沙盒测试阶段用 dev.toyyibpay.com；
@@ -798,10 +800,11 @@ app.post("/api/create-payment", async (req, res) => {
   }
   const orderNo = genOrderNo();
 
-  let paymentUrl;
+  let paymentUrl, billCode;
   try {
     const bill = await createToyyibPayBill({ orderNo, amountRM: total });
     paymentUrl = bill.paymentUrl;
+    billCode = bill.billCode;
   } catch (err) {
     console.error("❌ 网站下单建立 ToyyibPay 账单失败：", err.message);
     return res.status(500).json({ error: "生成付款链接失败，请稍后重试或联系客服" });
@@ -832,7 +835,7 @@ app.post("/api/create-payment", async (req, res) => {
         from: process.env.TWILIO_WHATSAPP_FROM,
         to: toNumber,
         contentSid,
-        contentVariables: JSON.stringify({ "1": name || "顾客", "2": orderNo, "3": paymentUrl }),
+        contentVariables: JSON.stringify({ "1": name || "顾客", "2": orderNo, "3": billCode }),
       })
       .catch((err) => console.error("❌ 发送付款链接提醒失败：", err.message));
   }
