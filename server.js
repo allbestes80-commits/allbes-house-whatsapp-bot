@@ -16,6 +16,7 @@
 // 不需要再改这个项目里的任何代码——具体说明见 sheetData.js 文件开头的注释。
 
 require("dotenv").config();
+const crypto = require("crypto");
 const express = require("express");
 const bodyParser = require("body-parser");
 const twilio = require("twilio");
@@ -47,6 +48,59 @@ const ORDER_REMINDER_CONTENT_SID = {
   en: "HX46263ccb01c783ce7195520a97cebd1a",
   ms: "HX636a86cc3cf07a0dbc30087e80ec9e1d",
 };
+
+// 【新增】网站下单的付款链接通知模板（已改成 ToyyibPay 链接，不再是银行转账/TnG 说明，
+// 模板内容变了所以是全新送审的模板，跟上面 ORDER_REMINDER_CONTENT_SID 不是同一个）。
+const ORDER_PAYMENT_CONTENT_SID = {
+  zh: "HX2afd4b30fb290b5b60098bc9a87fa823",
+  en: "HXe885da016136b596cb115d3cf1e5a687",
+  ms: "HXfbcf80cb779b9004208b3b0826753acd",
+};
+
+// 【新增】ToyyibPay 收款网关配置。沙盒测试阶段用 dev.toyyibpay.com；
+// 测试没问题后正式上线，把 TOYYIBPAY_BASE_URL 换成 https://toyyibpay.com，
+// TOYYIBPAY_SECRET_KEY / TOYYIBPAY_CATEGORY_CODE 换成正式账号那一套（沙盒和正式账号是分开的）。
+const TOYYIBPAY_BASE_URL = process.env.TOYYIBPAY_BASE_URL || "https://dev.toyyibpay.com";
+const TOYYIBPAY_SECRET_KEY = process.env.TOYYIBPAY_SECRET_KEY || "";
+const TOYYIBPAY_CATEGORY_CODE = process.env.TOYYIBPAY_CATEGORY_CODE || "";
+const PUBLIC_BASE_URL = process.env.PUBLIC_BASE_URL || "https://chatbot-skincare-production.up.railway.app";
+const WEBSITE_BASE_URL = process.env.WEBSITE_BASE_URL || "https://lumeestore.online";
+
+/**
+ * 调用 ToyyibPay 生成一个收款账单，返回付款链接。
+ * billPayorInfo 设成 0（不额外要求邮箱等信息）——WhatsApp 下单流程本来就没收集邮箱，
+ * 网站结账目前也没有邮箱栏位，这样就不用为了接付款又多加一个必填栏位。
+ */
+async function createToyyibPayBill({ orderNo, amountRM }) {
+  if (!TOYYIBPAY_SECRET_KEY || !TOYYIBPAY_CATEGORY_CODE) {
+    throw new Error("还没配置 TOYYIBPAY_SECRET_KEY / TOYYIBPAY_CATEGORY_CODE 环境变量");
+  }
+  const params = new URLSearchParams({
+    userSecretKey: TOYYIBPAY_SECRET_KEY,
+    categoryCode: TOYYIBPAY_CATEGORY_CODE,
+    billName: orderNo.slice(0, 30),
+    billDescription: `Lumee Store order ${orderNo}`.slice(0, 100),
+    billPriceSetting: "1",
+    billPayorInfo: "0",
+    billAmount: String(Math.round(amountRM * 100)),
+    billPaymentChannel: "2",
+    billReturnUrl: `${WEBSITE_BASE_URL}/`, // ToyyibPay 会自动在后面加上 ?status=&order_id=&billcode=&refno=&reason=&amount= 这些参数
+    billCallbackUrl: `${PUBLIC_BASE_URL}/api/toyyibpay-callback`,
+    billExternalReferenceNo: orderNo,
+    billExpiryDays: "3",
+  });
+  const res = await fetch(`${TOYYIBPAY_BASE_URL}/index.php/api/createBill`, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: params.toString(),
+  });
+  const data = await res.json();
+  if (!Array.isArray(data) || !data[0] || !data[0].BillCode) {
+    throw new Error("ToyyibPay 建立账单失败：" + JSON.stringify(data));
+  }
+  const billCode = data[0].BillCode;
+  return { billCode, paymentUrl: `${TOYYIBPAY_BASE_URL}/${billCode}` };
+}
 
 const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY,
@@ -107,21 +161,6 @@ const GIFT_TIERS = [
   { minTotal: 150, zh: "沐浴露一瓶（赠品，随机口味）", en: "1 free shower gel (random scent)", ms: "1 gel mandi percuma (rasa rawak)" },
   { minTotal: 80, zh: "护手霜一支（赠品，随机口味）", en: "1 free hand cream (random scent)", ms: "1 krim tangan percuma (rasa rawak)" },
 ];
-
-const PAYMENT_INSTRUCTIONS = {
-  zh: {
-    bank: "请转账至：\nAllbes Trading\n银行：Public Bank\n账号：3816700111\n转账完成后，请把付款截图发到这里确认，谢谢！",
-    tng: "请使用 Touch 'n Go eWallet 扫描收款码完成付款：\n📱 [二维码占位，正式上线需替换为真实收款码]\n付款完成后，请把付款截图发到这里确认，谢谢！",
-  },
-  en: {
-    bank: "Please transfer to:\nAllbes Trading\nBank: Public Bank\nAccount: 3816700111\nAfter transferring, please send a screenshot here for confirmation. Thank you!",
-    tng: "Scan the QR code with your Touch 'n Go eWallet to pay:\n📱 [QR placeholder — replace with your real code at launch]\nAfter paying, please send a screenshot here for confirmation. Thank you!",
-  },
-  ms: {
-    bank: "Sila pindahkan ke:\nAllbes Trading\nBank: Public Bank\nAkaun: 3816700111\nSelepas pindahan, sila hantar tangkapan skrin di sini untuk pengesahan. Terima kasih!",
-    tng: "Imbas kod QR dengan Touch 'n Go eWallet untuk membayar:\n📱 [Kod QR sementara — gantikan dengan kod sebenar semasa pelancaran]\nSelepas membayar, sila hantar tangkapan skrin di sini untuk pengesahan. Terima kasih!",
-  },
-};
 
 // 【新增】给 Claude 用的下单工具：客户明确确认要买什么的时候，AI 调用这个工具，
 // 之后的收货信息收集就交给下面的确定性对话流程处理，不再靠 AI 自由发挥。
@@ -487,9 +526,9 @@ const CONFIRM_ORDER_TEXT = {
 };
 
 const ASK_FIELD_TEXT = {
-  zh: { name: "麻烦告诉我收货人姓名：", phoneConfirm: (n) => `用这个号码 ${n} 联系您可以吗？可以的话回复"可以"，不行的话直接发我另一个号码。`, address: "收货地址（门牌号、街道名）是？", city: "城市是？", postcode: "邮政编码是？", state: "州属是？", payment: "付款方式选哪个？回复 1 = 银行转账，2 = Touch 'n Go", invalidPostcode: "邮编看起来不太对，麻烦重新发一下（一般是 5 位数字）：", invalidPayment: "麻烦回复 1（银行转账）或 2（Touch 'n Go）哦。", optIn: "最后一个小问题：以后想收到我们的优惠消息和新品通知吗？回复「要」或「不要」" },
-  en: { name: "What name should the order be under?", phoneConfirm: (n) => `Should I use ${n} to contact you? Reply "yes" if that's fine, or send me another number.`, address: "What's the delivery address (unit/house no., street)?", city: "Which city?", postcode: "Postcode?", state: "Which state?", payment: "Choose a payment method: reply 1 = Bank Transfer, 2 = Touch 'n Go", invalidPostcode: "That postcode doesn't look right, please resend it (usually 5 digits):", invalidPayment: "Please reply 1 (Bank Transfer) or 2 (Touch 'n Go).", optIn: "One last thing: would you like to receive future promotions and new arrivals from us? Reply \"yes\" or \"no\"" },
-  ms: { name: "Atas nama siapa pesanan ini?", phoneConfirm: (n) => `Boleh saya gunakan ${n} untuk hubungi anda? Balas "boleh" jika ya, atau hantar nombor lain.`, address: "Alamat penghantaran (no. rumah, nama jalan)?", city: "Bandar?", postcode: "Poskod?", state: "Negeri?", payment: "Pilih kaedah pembayaran: balas 1 = Pindahan Bank, 2 = Touch 'n Go", invalidPostcode: "Poskod nampak tidak betul, sila hantar semula (biasanya 5 digit):", invalidPayment: "Sila balas 1 (Pindahan Bank) atau 2 (Touch 'n Go).", optIn: "Satu soalan terakhir: adakah anda mahu menerima promosi dan produk baharu daripada kami pada masa hadapan? Balas \"ya\" atau \"tidak\"" },
+  zh: { name: "麻烦告诉我收货人姓名：", phoneConfirm: (n) => `用这个号码 ${n} 联系您可以吗？可以的话回复"可以"，不行的话直接发我另一个号码。`, address: "收货地址（门牌号、街道名）是？", city: "城市是？", postcode: "邮政编码是？", state: "州属是？", invalidPostcode: "邮编看起来不太对，麻烦重新发一下（一般是 5 位数字）：", optIn: "最后一个小问题：以后想收到我们的优惠消息和新品通知吗？回复「要」或「不要」" },
+  en: { name: "What name should the order be under?", phoneConfirm: (n) => `Should I use ${n} to contact you? Reply "yes" if that's fine, or send me another number.`, address: "What's the delivery address (unit/house no., street)?", city: "Which city?", postcode: "Postcode?", state: "Which state?", invalidPostcode: "That postcode doesn't look right, please resend it (usually 5 digits):", optIn: "One last thing: would you like to receive future promotions and new arrivals from us? Reply \"yes\" or \"no\"" },
+  ms: { name: "Atas nama siapa pesanan ini?", phoneConfirm: (n) => `Boleh saya gunakan ${n} untuk hubungi anda? Balas "boleh" jika ya, atau hantar nombor lain.`, address: "Alamat penghantaran (no. rumah, nama jalan)?", city: "Bandar?", postcode: "Poskod?", state: "Negeri?", invalidPostcode: "Poskod nampak tidak betul, sila hantar semula (biasanya 5 digit):", optIn: "Satu soalan terakhir: adakah anda mahu menerima promosi dan produk baharu daripada kami pada masa hadapan? Balas \"ya\" atau \"tidak\"" },
 };
 
 const ORDER_CANCELLED_TEXT = {
@@ -499,9 +538,15 @@ const ORDER_CANCELLED_TEXT = {
 };
 
 const ORDER_DONE_TEXT = {
-  zh: (orderNo, payMethod) => `订单已经安排好啦！订单号：${orderNo}\n\n${PAYMENT_INSTRUCTIONS.zh[payMethod]}`,
-  en: (orderNo, payMethod) => `Your order is all set! Order No: ${orderNo}\n\n${PAYMENT_INSTRUCTIONS.en[payMethod]}`,
-  ms: (orderNo, payMethod) => `Pesanan anda sudah sedia! No. Pesanan: ${orderNo}\n\n${PAYMENT_INSTRUCTIONS.ms[payMethod]}`,
+  zh: (orderNo, paymentUrl) => `订单已经安排好啦！订单号：${orderNo}\n\n请点击以下链接完成付款：\n${paymentUrl}\n\n付款成功后我们会自动确认，无需再发送截图，谢谢！`,
+  en: (orderNo, paymentUrl) => `Your order is all set! Order No: ${orderNo}\n\nPlease complete payment via this link:\n${paymentUrl}\n\nWe'll confirm automatically once paid, no need to send a screenshot. Thank you!`,
+  ms: (orderNo, paymentUrl) => `Pesanan anda sudah sedia! No. Pesanan: ${orderNo}\n\nSila selesaikan pembayaran melalui pautan ini:\n${paymentUrl}\n\nKami akan sahkan secara automatik selepas pembayaran, tidak perlu hantar tangkapan skrin. Terima kasih!`,
+};
+
+const PAYMENT_LINK_FAILED_TEXT = {
+  zh: "不好意思，生成付款链接时出了点问题，麻烦稍后再试一次，或者直接联系客服帮您处理，谢谢！",
+  en: "Sorry, something went wrong generating your payment link. Please try again shortly, or contact us directly for help. Thank you!",
+  ms: "Maaf, berlaku masalah semasa menjana pautan pembayaran. Sila cuba sebentar lagi, atau hubungi kami terus untuk bantuan. Terima kasih!",
 };
 
 /**
@@ -580,24 +625,13 @@ async function handleOrderStep(fromNumber, message) {
 
     case "state": {
       session.state = message.trim();
-      session.step = "payment";
-      return ASK_FIELD_TEXT[lang].payment;
-    }
-
-    case "payment": {
-      const t = message.trim().toLowerCase();
-      let payMethod = null;
-      if (t.includes("1") || t.includes("bank") || t.includes("银行") || t.includes("pindahan")) payMethod = "bank";
-      else if (t.includes("2") || t.includes("tng") || t.includes("touch")) payMethod = "tng";
-      if (!payMethod) return ASK_FIELD_TEXT[lang].invalidPayment;
-      session.payMethod = payMethod;
       session.step = "optin";
       return ASK_FIELD_TEXT[lang].optIn;
     }
 
     case "optin": {
       session.optIn = textIncludesAny(message, AFFIRMATIVE_WORDS);
-      return finalizeOrder(fromNumber, session.payMethod);
+      return finalizeOrder(fromNumber);
     }
 
     default:
@@ -607,18 +641,27 @@ async function handleOrderStep(fromNumber, message) {
 }
 
 /**
- * 收货信息都收集齐了，生成订单号、写进 Google Sheets「订单记录」表
- * （跟网站下单用的是同一个 Apps Script 接口，所以两边订单会出现在同一张表里），
- * 然后把付款方式发给客户。
+ * 收货信息都收集齐了：生成订单号、建一个 ToyyibPay 付款链接、写进 Google Sheets「订单记录」表
+ * （跟网站下单用的是同一个 Apps Script 接口，所以两边订单会出现在同一张表里，状态先记"待付款"），
+ * 然后把付款链接发给客户。
  */
-async function finalizeOrder(fromNumber, payMethod) {
+async function finalizeOrder(fromNumber) {
   const session = orderSessions[fromNumber];
   const lang = session.lang;
   const gift = computeGift(session.subtotal, lang);
   const itemsText = summarizeItems(session.items) + (gift ? `, ${gift}` : "");
   const orderNo = genOrderNo();
   const address = `${session.address}, ${session.postcode} ${session.city}, ${session.state}`;
-  const payMethodLabel = payMethod === "bank" ? "银行转账" : "Touch 'n Go";
+
+  let paymentUrl;
+  try {
+    const bill = await createToyyibPayBill({ orderNo, amountRM: session.subtotal });
+    paymentUrl = bill.paymentUrl;
+  } catch (err) {
+    console.error("❌ WhatsApp 下单建立 ToyyibPay 账单失败：", err.message);
+    delete orderSessions[fromNumber];
+    return PAYMENT_LINK_FAILED_TEXT[lang];
+  }
 
   try {
     await fetch(ORDER_LOG_URL, {
@@ -630,7 +673,8 @@ async function finalizeOrder(fromNumber, payMethod) {
         address,
         items: itemsText,
         total: "RM " + session.subtotal,
-        payMethod: payMethodLabel,
+        payMethod: "ToyyibPay",
+        status: "待付款",
       }),
     });
   } catch (err) {
@@ -639,7 +683,7 @@ async function finalizeOrder(fromNumber, payMethod) {
 
   delete orderSessions[fromNumber];
   touchFollowUp(session.phone, session.name, "已下单", lang, session.optIn);
-  return ORDER_DONE_TEXT[lang](orderNo, payMethod);
+  return ORDER_DONE_TEXT[lang](orderNo, paymentUrl);
 }
 
 /**
@@ -739,6 +783,86 @@ app.post("/api/order-notify", async (req, res) => {
   } catch (err) {
     console.error("❌ 发送订单付款提醒失败：", err.message);
     res.status(500).json({ error: err.message });
+  }
+});
+
+// 【新增】网站结账：生成订单号、建一个 ToyyibPay 付款账单，写进 Google Sheets（状态先记"待付款"），
+// 把付款链接返回给网站，网站收到后直接跳转过去让客人付款。
+// 网站需要 POST：{ name, phone, address, items, total, lang }，total 是纯数字（RM 多少钱）
+app.post("/api/create-payment", async (req, res) => {
+  const { name, phone, address, items, total, lang } = req.body || {};
+  if (!items || typeof total !== "number" || total <= 0) {
+    return res.status(400).json({ error: "缺少必要参数：items 或 total" });
+  }
+  const orderNo = genOrderNo();
+
+  let paymentUrl;
+  try {
+    const bill = await createToyyibPayBill({ orderNo, amountRM: total });
+    paymentUrl = bill.paymentUrl;
+  } catch (err) {
+    console.error("❌ 网站下单建立 ToyyibPay 账单失败：", err.message);
+    return res.status(500).json({ error: "生成付款链接失败，请稍后重试或联系客服" });
+  }
+
+  try {
+    await fetch(ORDER_LOG_URL, {
+      method: "POST",
+      body: JSON.stringify({
+        orderNo, name, phone, address, items,
+        total: "RM " + total,
+        payMethod: "ToyyibPay",
+        status: "待付款",
+      }),
+    });
+  } catch (err) {
+    console.error("⚠️ 网站下单写入 Google Sheets 失败：", err.message);
+  }
+
+  res.json({ result: "success", orderNo, paymentUrl });
+
+  // 网站客人没主动在 WhatsApp 发过消息，24 小时会话窗口是关闭的，只能用已审核模板发提醒。
+  if (phone) {
+    const contentSid = ORDER_PAYMENT_CONTENT_SID[lang] || ORDER_PAYMENT_CONTENT_SID.zh;
+    const toNumber = phone.startsWith("whatsapp:") ? phone : `whatsapp:${phone}`;
+    twilioClient.messages
+      .create({
+        from: process.env.TWILIO_WHATSAPP_FROM,
+        to: toNumber,
+        contentSid,
+        contentVariables: JSON.stringify({ "1": name || "顾客", "2": orderNo, "3": paymentUrl }),
+      })
+      .catch((err) => console.error("❌ 发送付款链接提醒失败：", err.message));
+  }
+});
+
+// 【新增】ToyyibPay 付款回调：客人付款完成后，ToyyibPay 会自动 POST 到这里通知结果。
+// 一定要先验证 hash，确认这条通知真的是 ToyyibPay 发的、金额和订单号没被人篡改过。
+app.post("/api/toyyibpay-callback", async (req, res) => {
+  const { refno, status, billcode, order_id, hash } = req.body || {};
+  res.sendStatus(200); // ToyyibPay 只要求收到 200，处理逻辑不需要让它等
+
+  if (!order_id || !status || !hash) return;
+
+  const expectedHash = crypto
+    .createHash("md5")
+    .update(`${TOYYIBPAY_SECRET_KEY}${status}${order_id}${refno || ""}ok`)
+    .digest("hex");
+  if (expectedHash !== hash) {
+    console.error(`⚠️ ToyyibPay 回调签名不匹配，忽略（订单：${order_id}，billcode：${billcode}）`);
+    return;
+  }
+
+  const newStatus = status === "1" ? "已确认" : status === "3" ? "付款失败" : "待付款";
+  console.log(`💰 ToyyibPay 回调：订单 ${order_id} 付款状态 -> ${newStatus}`);
+
+  try {
+    await fetch(ORDER_LOG_URL, {
+      method: "POST",
+      body: JSON.stringify({ action: "updatePaymentStatus", orderNo: order_id, status: newStatus }),
+    });
+  } catch (err) {
+    console.error("⚠️ 更新订单付款状态失败：", err.message);
   }
 });
 
