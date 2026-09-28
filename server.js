@@ -52,7 +52,7 @@ const ORDER_REMINDER_CONTENT_SID = {
 // 【新增】网站下单的付款链接通知模板（已改成 ToyyibPay 链接，不再是银行转账/TnG 说明，
 // 模板内容变了所以是全新送审的模板，跟上面 ORDER_REMINDER_CONTENT_SID 不是同一个）。
 const ORDER_PAYMENT_CONTENT_SID = {
-  zh: "HX2afd4b30fb290b5b60098bc9a87fa823",
+  zh: "HX72ad321236125c8adf488f2a217bea28",
   en: "HXe885da016136b596cb115d3cf1e5a687",
   ms: "HXfbcf80cb779b9004208b3b0826753acd",
 };
