@@ -275,7 +275,9 @@ function matchProduct(query, products) {
 function genOrderNo() {
   const d = new Date();
   const ymd = d.getFullYear() + String(d.getMonth() + 1).padStart(2, "0") + String(d.getDate()).padStart(2, "0");
-  return "AH" + ymd + Math.floor(Math.random() * 90 + 10);
+  // 原来只有两位随机数（10~99），一天内下单一多就很容易撞号；
+  // 现在付款回调要靠订单号精确匹配更新状态，撞号会把错的订单标记成已付款，所以改成六位随机数。
+  return "AH" + ymd + Math.floor(Math.random() * 900000 + 100000);
 }
 
 function computeGift(subtotal, lang) {
