@@ -59,6 +59,21 @@ const ORDER_PAYMENT_CONTENT_SID = {
   ms: "HX314c67833569d08fb68d2ad8024c5609",
 };
 
+// 【新增】付款成功后主动通知客人的模板（不带链接的纯文字收据，UTILITY 分类）。
+// 客户如果最近 24 小时内跟机器人互动过，回调那边会先尝试直接发自由格式文字
+// （不用等审核，能立刻用），只有自由格式发送失败（比如超过 24 小时窗口）才会退回用这个模板。
+const PAYMENT_CONFIRMED_CONTENT_SID = {
+  zh: "HXd0215aee73ee996eea7ccb3a34c1ad32",
+  en: "HXee6c09d22c76d5587dbfa5d252b1ca29",
+  ms: "HXdba79f5ce0fe7a6c96ab8a2f46c54fdd",
+};
+
+// 【新增】记录每个订单对应的客户信息（手机号/姓名/语言），付款回调回来的时候要用来通知客人。
+// ToyyibPay 的回调内容里没有手机号，所以要在建账单的时候先记一份，回调时按订单号查回来。
+// 跟 orderSessions 一样存在内存里，重启服务会清空——如果服务器刚好在客户付款那几分钟重启，
+// 会导致查不到人从而发不出通知（表格状态还是会正常更新），这种情况比较少见，先接受这个限制。
+const pendingPayments = {};
+
 // 【新增】ToyyibPay 收款网关配置。沙盒测试阶段用 dev.toyyibpay.com；
 // 测试没问题后正式上线，把 TOYYIBPAY_BASE_URL 换成 https://toyyibpay.com，
 // TOYYIBPAY_SECRET_KEY / TOYYIBPAY_CATEGORY_CODE 换成正式账号那一套（沙盒和正式账号是分开的）。
@@ -666,6 +681,7 @@ async function finalizeOrder(fromNumber) {
     delete orderSessions[fromNumber];
     return PAYMENT_LINK_FAILED_TEXT[lang];
   }
+  pendingPayments[orderNo] = { phone: session.phone, name: session.name, lang };
 
   try {
     await fetch(ORDER_LOG_URL, {
@@ -805,10 +821,12 @@ app.post("/api/create-payment", async (req, res) => {
     const bill = await createToyyibPayBill({ orderNo, amountRM: total });
     paymentUrl = bill.paymentUrl;
     billCode = bill.billCode;
+    console.log(`✅ 网站下单：${orderNo}，金额 RM${total}，付款链接 ${paymentUrl}`);
   } catch (err) {
     console.error("❌ 网站下单建立 ToyyibPay 账单失败：", err.message);
     return res.status(500).json({ error: "生成付款链接失败，请稍后重试或联系客服" });
   }
+  pendingPayments[orderNo] = { phone, name, lang };
 
   try {
     await fetch(ORDER_LOG_URL, {
@@ -837,7 +855,8 @@ app.post("/api/create-payment", async (req, res) => {
         contentSid,
         contentVariables: JSON.stringify({ "1": name || "顾客", "2": orderNo, "3": billCode }),
       })
-      .catch((err) => console.error("❌ 发送付款链接提醒失败：", err.message));
+      .then((msg) => console.log(`✅ 已发送付款链接提醒给 ${toNumber}，消息 SID：${msg.sid}`))
+      .catch((err) => console.error(`❌ 发送付款链接提醒给 ${toNumber} 失败：${err.message}（错误码：${err.code || "无"}）`));
   }
 });
 
@@ -845,9 +864,13 @@ app.post("/api/create-payment", async (req, res) => {
 // 一定要先验证 hash，确认这条通知真的是 ToyyibPay 发的、金额和订单号没被人篡改过。
 app.post("/api/toyyibpay-callback", async (req, res) => {
   const { refno, status, billcode, order_id, hash } = req.body || {};
+  console.log(`📩 收到 ToyyibPay 回调：${JSON.stringify(req.body || {})}`);
   res.sendStatus(200); // ToyyibPay 只要求收到 200，处理逻辑不需要让它等
 
-  if (!order_id || !status || !hash) return;
+  if (!order_id || !status || !hash) {
+    console.error("⚠️ ToyyibPay 回调缺少必要字段，忽略");
+    return;
+  }
 
   const expectedHash = crypto
     .createHash("md5")
@@ -868,6 +891,44 @@ app.post("/api/toyyibpay-callback", async (req, res) => {
     });
   } catch (err) {
     console.error("⚠️ 更新订单付款状态失败：", err.message);
+  }
+
+  if (status !== "1") return; // 只有付款成功才主动通知客人，失败/待处理不打扰
+
+  const customer = pendingPayments[order_id];
+  if (!customer || !customer.phone) {
+    console.error(`⚠️ 找不到订单 ${order_id} 对应的客户信息，无法发送付款成功通知`);
+    return;
+  }
+  delete pendingPayments[order_id];
+
+  const lang = customer.lang || "zh";
+  const toNumber = customer.phone.startsWith("whatsapp:") ? customer.phone : `whatsapp:${customer.phone}`;
+  const freeformText = {
+    zh: `您好 ${customer.name || ""}！您的订单（订单号：${order_id}）付款已经确认成功，我们会尽快为您安排发货，谢谢！`,
+    en: `Hi ${customer.name || "there"}! Payment for your order (Order No: ${order_id}) has been confirmed. We will ship it out soon, thank you!`,
+    ms: `Hai ${customer.name || "there"}! Pembayaran untuk pesanan anda (No. Pesanan: ${order_id}) telah disahkan. Kami akan menghantarnya tidak lama lagi, terima kasih!`,
+  }[lang];
+
+  try {
+    // 客户最近 24 小时内跟机器人互动过的话，可以直接发自由格式文字，不用等模板审核。
+    await twilioClient.messages.create({ from: process.env.TWILIO_WHATSAPP_FROM, to: toNumber, body: freeformText });
+    console.log(`✅ 已发送付款成功通知给 ${toNumber}（自由格式）`);
+  } catch (err) {
+    // 超过 24 小时窗口等情况会发送失败，退回用已审核模板（没有链接，走 UTILITY 分类）。
+    console.error(`⚠️ 自由格式发送失败（${err.message}），改用模板重试`);
+    try {
+      const contentSid = PAYMENT_CONFIRMED_CONTENT_SID[lang] || PAYMENT_CONFIRMED_CONTENT_SID.zh;
+      await twilioClient.messages.create({
+        from: process.env.TWILIO_WHATSAPP_FROM,
+        to: toNumber,
+        contentSid,
+        contentVariables: JSON.stringify({ "1": customer.name || "顾客", "2": order_id }),
+      });
+      console.log(`✅ 已发送付款成功通知给 ${toNumber}（模板）`);
+    } catch (err2) {
+      console.error("❌ 模板发送也失败了，付款成功通知没能发出去：", err2.message);
+    }
   }
 });
 
