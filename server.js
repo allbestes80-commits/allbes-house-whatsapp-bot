@@ -71,7 +71,7 @@ const PAYMENT_CONFIRMED_CONTENT_SID = {
 // 【新增】店主自己的号码：付款成功时额外发一条 WhatsApp 通知给店主，
 // 不然店主只能自己开 Google Sheets 才知道有没有新订单。
 const MERCHANT_PHONE = process.env.MERCHANT_PHONE || "+60138916812";
-const MERCHANT_NEW_PAYMENT_CONTENT_SID = "HX9053983b4119375e0c4cdcf9490745e9";
+const MERCHANT_NEW_PAYMENT_CONTENT_SID = "HXf828dcaa510aa14b93f4638e13ed87e8";
 
 // 【新增】记录每个订单对应的客户信息（手机号/姓名/语言），付款回调回来的时候要用来通知客人。
 // ToyyibPay 的回调内容里没有手机号，所以要在建账单的时候先记一份，回调时按订单号查回来。
@@ -937,26 +937,22 @@ app.post("/api/toyyibpay-callback", async (req, res) => {
   }
 
   // 顺手通知店主自己：不然店主只能靠自己开表格才知道有新订单。
+  // 店主平时不会主动找机器人聊天，24 小时会话窗口大概率是关闭的，
+  // 而且"超出窗口"这种失败是消息发出去之后才异步回报的状态，create() 调用本身不会报错、
+  // 没法用 try/catch 去判断要不要退回模板——所以这里直接用已审核模板发送，不先试自由格式。
   if (MERCHANT_PHONE) {
     const merchantTo = MERCHANT_PHONE.startsWith("whatsapp:") ? MERCHANT_PHONE : `whatsapp:${MERCHANT_PHONE}`;
     const amountText = typeof customer.amount === "number" ? `RM${customer.amount}` : "";
-    const merchantText = `新订单付款成功！订单号：${order_id}，金额：${amountText}，客人：${customer.name || ""}（${customer.phone}）。记得安排发货哦。`;
     try {
-      await twilioClient.messages.create({ from: process.env.TWILIO_WHATSAPP_FROM, to: merchantTo, body: merchantText });
-      console.log(`✅ 已通知店主 ${merchantTo}（自由格式）`);
+      await twilioClient.messages.create({
+        from: process.env.TWILIO_WHATSAPP_FROM,
+        to: merchantTo,
+        contentSid: MERCHANT_NEW_PAYMENT_CONTENT_SID,
+        contentVariables: JSON.stringify({ "1": order_id, "2": amountText, "3": customer.name || "顾客" }),
+      });
+      console.log(`✅ 已通知店主 ${merchantTo}`);
     } catch (err) {
-      console.error(`⚠️ 通知店主自由格式发送失败（${err.message}），改用模板重试`);
-      try {
-        await twilioClient.messages.create({
-          from: process.env.TWILIO_WHATSAPP_FROM,
-          to: merchantTo,
-          contentSid: MERCHANT_NEW_PAYMENT_CONTENT_SID,
-          contentVariables: JSON.stringify({ "1": order_id, "2": amountText, "3": customer.name || "顾客" }),
-        });
-        console.log(`✅ 已通知店主 ${merchantTo}（模板）`);
-      } catch (err2) {
-        console.error("❌ 通知店主也失败了：", err2.message);
-      }
+      console.error(`❌ 通知店主失败：${err.message}`);
     }
   }
 });
