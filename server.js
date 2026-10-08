@@ -71,9 +71,9 @@ const PAYMENT_CONFIRMED_CONTENT_SID = {
 // 【新增】店主自己的号码：付款成功时额外发一条 WhatsApp 通知给店主，
 // 不然店主只能自己开 Google Sheets 才知道有没有新订单。
 const MERCHANT_PHONE = process.env.MERCHANT_PHONE || "+60138916812";
-// 模板带两个变量（订单号+金额）一直被 WhatsApp 拒审（"变量相对正文太多"），
-// 改成只带订单号这一个变量才通过——金额等详情店主自己去表格看就行。
-const MERCHANT_NEW_PAYMENT_CONTENT_SID = "HXd0cf92599ddf1455521628450083cbb3";
+// 带变量（订单号/金额）的版本试了好几种写法都被 WhatsApp 拒审（"变量相对正文太多"），
+// 换成完全不带变量的纯文字提醒才真正进入审核队列——订单号等详情店主自己去表格看就行。
+const MERCHANT_NEW_PAYMENT_CONTENT_SID = "HX182a64ba5123a073f3dac63c2c3a14ab";
 
 // 【新增】记录每个订单对应的客户信息（手机号/姓名/语言），付款回调回来的时候要用来通知客人。
 // ToyyibPay 的回调内容里没有手机号，所以要在建账单的时候先记一份，回调时按订单号查回来。
@@ -949,9 +949,8 @@ app.post("/api/toyyibpay-callback", async (req, res) => {
         from: process.env.TWILIO_WHATSAPP_FROM,
         to: merchantTo,
         contentSid: MERCHANT_NEW_PAYMENT_CONTENT_SID,
-        contentVariables: JSON.stringify({ "1": order_id }),
       });
-      console.log(`✅ 已通知店主 ${merchantTo}`);
+      console.log(`✅ 已通知店主 ${merchantTo}（订单 ${order_id}）`);
     } catch (err) {
       console.error(`❌ 通知店主失败：${err.message}`);
     }
