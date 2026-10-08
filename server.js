@@ -54,7 +54,7 @@ const ORDER_REMINDER_CONTENT_SID = {
 // 按钮里的链接变量只需要传 billCode（不是完整网址），网址前缀是模板里写死的
 // https://dev.toyyibpay.com/ —— 换正式环境时这个模板要重新建一个（网址前缀会变成 toyyibpay.com）。
 const ORDER_PAYMENT_CONTENT_SID = {
-  zh: "HXd1ebdec8e8a4e3a1dea8e882f0c98808",
+  zh: "HX1a1b5367770e5caa8b2c09110a4bd4cc",
   en: "HXdba9de16b938ef120e3adf9e37262d5b",
   ms: "HX314c67833569d08fb68d2ad8024c5609",
 };
@@ -63,7 +63,7 @@ const ORDER_PAYMENT_CONTENT_SID = {
 // 客户如果最近 24 小时内跟机器人互动过，回调那边会先尝试直接发自由格式文字
 // （不用等审核，能立刻用），只有自由格式发送失败（比如超过 24 小时窗口）才会退回用这个模板。
 const PAYMENT_CONFIRMED_CONTENT_SID = {
-  zh: "HXd0215aee73ee996eea7ccb3a34c1ad32",
+  zh: "HXbd13dd52c56fe62e9fc85295df441bf8",
   en: "HXee6c09d22c76d5587dbfa5d252b1ca29",
   ms: "HXdba79f5ce0fe7a6c96ab8a2f46c54fdd",
 };
