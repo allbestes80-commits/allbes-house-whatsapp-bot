@@ -68,6 +68,11 @@ const PAYMENT_CONFIRMED_CONTENT_SID = {
   ms: "HXdba79f5ce0fe7a6c96ab8a2f46c54fdd",
 };
 
+// 【新增】店主自己的号码：付款成功时额外发一条 WhatsApp 通知给店主，
+// 不然店主只能自己开 Google Sheets 才知道有没有新订单。
+const MERCHANT_PHONE = process.env.MERCHANT_PHONE || "+60138916812";
+const MERCHANT_NEW_PAYMENT_CONTENT_SID = "HX9053983b4119375e0c4cdcf9490745e9";
+
 // 【新增】记录每个订单对应的客户信息（手机号/姓名/语言），付款回调回来的时候要用来通知客人。
 // ToyyibPay 的回调内容里没有手机号，所以要在建账单的时候先记一份，回调时按订单号查回来。
 // 跟 orderSessions 一样存在内存里，重启服务会清空——如果服务器刚好在客户付款那几分钟重启，
@@ -681,7 +686,7 @@ async function finalizeOrder(fromNumber) {
     delete orderSessions[fromNumber];
     return PAYMENT_LINK_FAILED_TEXT[lang];
   }
-  pendingPayments[orderNo] = { phone: session.phone, name: session.name, lang };
+  pendingPayments[orderNo] = { phone: session.phone, name: session.name, lang, amount: session.subtotal };
 
   try {
     await fetch(ORDER_LOG_URL, {
@@ -826,7 +831,7 @@ app.post("/api/create-payment", async (req, res) => {
     console.error("❌ 网站下单建立 ToyyibPay 账单失败：", err.message);
     return res.status(500).json({ error: "生成付款链接失败，请稍后重试或联系客服" });
   }
-  pendingPayments[orderNo] = { phone, name, lang };
+  pendingPayments[orderNo] = { phone, name, lang, amount: total };
 
   try {
     await fetch(ORDER_LOG_URL, {
@@ -928,6 +933,30 @@ app.post("/api/toyyibpay-callback", async (req, res) => {
       console.log(`✅ 已发送付款成功通知给 ${toNumber}（模板）`);
     } catch (err2) {
       console.error("❌ 模板发送也失败了，付款成功通知没能发出去：", err2.message);
+    }
+  }
+
+  // 顺手通知店主自己：不然店主只能靠自己开表格才知道有新订单。
+  if (MERCHANT_PHONE) {
+    const merchantTo = MERCHANT_PHONE.startsWith("whatsapp:") ? MERCHANT_PHONE : `whatsapp:${MERCHANT_PHONE}`;
+    const amountText = typeof customer.amount === "number" ? `RM${customer.amount}` : "";
+    const merchantText = `新订单付款成功！订单号：${order_id}，金额：${amountText}，客人：${customer.name || ""}（${customer.phone}）。记得安排发货哦。`;
+    try {
+      await twilioClient.messages.create({ from: process.env.TWILIO_WHATSAPP_FROM, to: merchantTo, body: merchantText });
+      console.log(`✅ 已通知店主 ${merchantTo}（自由格式）`);
+    } catch (err) {
+      console.error(`⚠️ 通知店主自由格式发送失败（${err.message}），改用模板重试`);
+      try {
+        await twilioClient.messages.create({
+          from: process.env.TWILIO_WHATSAPP_FROM,
+          to: merchantTo,
+          contentSid: MERCHANT_NEW_PAYMENT_CONTENT_SID,
+          contentVariables: JSON.stringify({ "1": order_id, "2": amountText, "3": customer.name || "顾客" }),
+        });
+        console.log(`✅ 已通知店主 ${merchantTo}（模板）`);
+      } catch (err2) {
+        console.error("❌ 通知店主也失败了：", err2.message);
+      }
     }
   }
 });
