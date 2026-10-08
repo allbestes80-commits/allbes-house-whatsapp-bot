@@ -71,7 +71,9 @@ const PAYMENT_CONFIRMED_CONTENT_SID = {
 // 【新增】店主自己的号码：付款成功时额外发一条 WhatsApp 通知给店主，
 // 不然店主只能自己开 Google Sheets 才知道有没有新订单。
 const MERCHANT_PHONE = process.env.MERCHANT_PHONE || "+60138916812";
-const MERCHANT_NEW_PAYMENT_CONTENT_SID = "HXf828dcaa510aa14b93f4638e13ed87e8";
+// 模板带两个变量（订单号+金额）一直被 WhatsApp 拒审（"变量相对正文太多"），
+// 改成只带订单号这一个变量才通过——金额等详情店主自己去表格看就行。
+const MERCHANT_NEW_PAYMENT_CONTENT_SID = "HXd0cf92599ddf1455521628450083cbb3";
 
 // 【新增】记录每个订单对应的客户信息（手机号/姓名/语言），付款回调回来的时候要用来通知客人。
 // ToyyibPay 的回调内容里没有手机号，所以要在建账单的时候先记一份，回调时按订单号查回来。
@@ -686,7 +688,7 @@ async function finalizeOrder(fromNumber) {
     delete orderSessions[fromNumber];
     return PAYMENT_LINK_FAILED_TEXT[lang];
   }
-  pendingPayments[orderNo] = { phone: session.phone, name: session.name, lang, amount: session.subtotal };
+  pendingPayments[orderNo] = { phone: session.phone, name: session.name, lang };
 
   try {
     await fetch(ORDER_LOG_URL, {
@@ -831,7 +833,7 @@ app.post("/api/create-payment", async (req, res) => {
     console.error("❌ 网站下单建立 ToyyibPay 账单失败：", err.message);
     return res.status(500).json({ error: "生成付款链接失败，请稍后重试或联系客服" });
   }
-  pendingPayments[orderNo] = { phone, name, lang, amount: total };
+  pendingPayments[orderNo] = { phone, name, lang };
 
   try {
     await fetch(ORDER_LOG_URL, {
@@ -942,13 +944,12 @@ app.post("/api/toyyibpay-callback", async (req, res) => {
   // 没法用 try/catch 去判断要不要退回模板——所以这里直接用已审核模板发送，不先试自由格式。
   if (MERCHANT_PHONE) {
     const merchantTo = MERCHANT_PHONE.startsWith("whatsapp:") ? MERCHANT_PHONE : `whatsapp:${MERCHANT_PHONE}`;
-    const amountText = typeof customer.amount === "number" ? `RM${customer.amount}` : "";
     try {
       await twilioClient.messages.create({
         from: process.env.TWILIO_WHATSAPP_FROM,
         to: merchantTo,
         contentSid: MERCHANT_NEW_PAYMENT_CONTENT_SID,
-        contentVariables: JSON.stringify({ "1": order_id, "2": amountText, "3": customer.name || "顾客" }),
+        contentVariables: JSON.stringify({ "1": order_id }),
       });
       console.log(`✅ 已通知店主 ${merchantTo}`);
     } catch (err) {
