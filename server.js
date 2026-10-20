@@ -873,46 +873,14 @@ app.get("/api/debug-content-template", async (req, res) => {
   if (!sid) return res.status(400).json({ error: "缺少 ?sid=" });
   try {
     const auth = Buffer.from(`${process.env.TWILIO_ACCOUNT_SID}:${process.env.TWILIO_AUTH_TOKEN}`).toString("base64");
-    const r = await fetch(`https://content.twilio.com/v1/Content/${sid}`, {
+    const url = req.query.approval
+      ? `https://content.twilio.com/v1/Content/${sid}/ApprovalRequests`
+      : `https://content.twilio.com/v1/Content/${sid}`;
+    const r = await fetch(url, {
       headers: { Authorization: `Basic ${auth}` },
     });
     const data = await r.json();
     res.status(r.status).json(data);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// 【临时用，修复乱码后会删掉】重新建一个编码正确的 zh 版"付款链接提醒"模板，替换掉损坏的那个，
-// 并提交 WhatsApp 审核（锁定 UTILITY 分类，跟之前重新提交那次一样）。
-app.get("/api/debug-recreate-zh-payment-template", async (req, res) => {
-  try {
-    const auth = Buffer.from(`${process.env.TWILIO_ACCOUNT_SID}:${process.env.TWILIO_AUTH_TOKEN}`).toString("base64");
-    const createRes = await fetch("https://content.twilio.com/v1/Content", {
-      method: "POST",
-      headers: { Authorization: `Basic ${auth}`, "Content-Type": "application/json" },
-      body: JSON.stringify({
-        friendly_name: "order_payment_cta_zh_v4",
-        language: "zh_CN",
-        variables: { "1": "张小姐", "2": "AH2026092801", "3": "abcd1234" },
-        types: {
-          "twilio/call-to-action": {
-            body: "您好 {{1}}！感谢您在 Lumee Store 下单(订单号: {{2}})。点击下方按钮完成付款，付款成功后我们会自动确认，无需再发送截图。",
-            actions: [{ type: "URL", title: "立即付款", url: "https://dev.toyyibpay.com/{{3}}" }],
-          },
-        },
-      }),
-    });
-    const created = await createRes.json();
-    if (!createRes.ok) return res.status(createRes.status).json({ step: "create", error: created });
-
-    const approveRes = await fetch(`https://content.twilio.com/v1/Content/${created.sid}/ApprovalRequests/whatsapp`, {
-      method: "POST",
-      headers: { Authorization: `Basic ${auth}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ name: "order_payment_cta_zh_v3", category: "UTILITY", allow_category_change: false }),
-    });
-    const approval = await approveRes.json();
-    res.status(200).json({ newSid: created.sid, createdBody: created.types, approvalSubmit: approval });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
