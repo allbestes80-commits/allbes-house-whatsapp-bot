@@ -340,6 +340,63 @@ const OTP_REPLY_TEXT = {
   ms: (code) => `Kod pengesahan log masuk anda ialah: ${code}\nSah selama 5 minit — masukkan di laman web untuk sahkan.`,
 };
 
+// 【新增】扫QR码送的 RM100 优惠额度：客户扫码跳去 WhatsApp 发固定暗号（LUMEE-GIFT），
+// 机器人自动绑定这个手机号、发 RM100 额度，之后每张订单满 RM100 可以抵扣 RM10，
+// 额度用完为止（最多抵 10 次）。一个手机号只能绑定一次。
+const GIFT_TRIGGER_RE = /^LUMEE-GIFT(-(ZH|EN|MS))?$/i;
+const VOUCHER_MIN_ORDER = 100; // 订单满这个金额才能用券
+const VOUCHER_DEDUCT_PER_USE = 10; // 每次最多抵扣这么多
+const VOUCHER_SHOP_LINK = "https://lumeestore.online";
+
+async function voucherAction(action, payload) {
+  try {
+    const res = await fetch(ORDER_LOG_URL, {
+      method: "POST",
+      body: JSON.stringify({ action, ...payload }),
+    });
+    return await res.json();
+  } catch (err) {
+    console.error(`⚠️ 优惠券操作失败（${action}）：`, err.message);
+    return null;
+  }
+}
+
+async function checkVoucherBalance(phone) {
+  const data = await voucherAction("voucherCheck", { phone });
+  return data && typeof data.balance === "number" ? data.balance : 0;
+}
+
+// 尝试在下单时用掉优惠券：订单不满门槛、或者没有余额就什么都不做，正常返回 0。
+async function tryRedeemVoucher(phone, subtotal) {
+  if (subtotal < VOUCHER_MIN_ORDER) return { deducted: 0, balanceAfter: null };
+  const balance = await checkVoucherBalance(phone);
+  if (balance <= 0) return { deducted: 0, balanceAfter: null };
+  const amount = Math.min(VOUCHER_DEDUCT_PER_USE, balance);
+  const data = await voucherAction("voucherRedeem", { phone, amount });
+  if (!data || !data.success) return { deducted: 0, balanceAfter: null };
+  return { deducted: amount, balanceAfter: data.balance };
+}
+
+const GIFT_QR_REPLY_TEXT = {
+  zh: (balance) =>
+    `🎁 恭喜！已经为您绑定 RM${balance} 优惠额度～\n以后每张订单满 RM${VOUCHER_MIN_ORDER}，可以自动抵扣 RM${VOUCHER_DEDUCT_PER_USE}，额度用完为止（最多可以用 ${
+      balance / VOUCHER_DEDUCT_PER_USE
+    } 次）。\n直接在这里跟我下单，或者去网站选购：${VOUCHER_SHOP_LINK}`,
+  en: (balance) =>
+    `🎁 Congrats! RM${balance} in store credit has been linked to your number.\nEvery order of RM${VOUCHER_MIN_ORDER}+ gets RM${VOUCHER_DEDUCT_PER_USE} off automatically, until the credit runs out (up to ${
+      balance / VOUCHER_DEDUCT_PER_USE
+    } times).\nOrder here on WhatsApp, or shop at: ${VOUCHER_SHOP_LINK}`,
+  ms: (balance) =>
+    `🎁 Tahniah! Kredit RM${balance} telah ditautkan ke nombor anda.\nSetiap pesanan RM${VOUCHER_MIN_ORDER}+ dapat potongan RM${VOUCHER_DEDUCT_PER_USE} secara automatik, sehingga kredit habis (sehingga ${
+      balance / VOUCHER_DEDUCT_PER_USE
+    } kali).\nTempah terus di sini, atau beli-belah di: ${VOUCHER_SHOP_LINK}`,
+};
+const GIFT_QR_ALREADY_TEXT = {
+  zh: (balance) => `您已经领取过这个优惠啦，目前还剩 RM${balance} 额度，满 RM${VOUCHER_MIN_ORDER} 下单会自动抵扣哦。`,
+  en: (balance) => `You've already claimed this before — you still have RM${balance} left, automatically applied on orders of RM${VOUCHER_MIN_ORDER}+.`,
+  ms: (balance) => `Anda sudah tuntut ini sebelum ini — baki RM${balance}, akan digunakan secara automatik untuk pesanan RM${VOUCHER_MIN_ORDER}+.`,
+};
+
 // 【新增】订货运输系统的订单查询：客户发「查询 ZH…」时，去订货系统查物流状态并原样回复。
 // ZH 开头的是订货运输系统的订单号（本机器人自己 WhatsApp 下单用的是 AH 开头，互不影响）。
 // 订货系统会核对发件号码是不是下单时填的号码，不是本人的话只回一句提示，不泄露订单内容。
@@ -564,9 +621,14 @@ const ORDER_CANCELLED_TEXT = {
 };
 
 const ORDER_DONE_TEXT = {
-  zh: (orderNo, paymentUrl) => `订单已经安排好啦！订单号：${orderNo}\n\n请点击以下链接完成付款：\n${paymentUrl}\n\n付款成功后我们会自动确认，无需再发送截图，谢谢！`,
-  en: (orderNo, paymentUrl) => `Your order is all set! Order No: ${orderNo}\n\nPlease complete payment via this link:\n${paymentUrl}\n\nWe'll confirm automatically once paid, no need to send a screenshot. Thank you!`,
-  ms: (orderNo, paymentUrl) => `Pesanan anda sudah sedia! No. Pesanan: ${orderNo}\n\nSila selesaikan pembayaran melalui pautan ini:\n${paymentUrl}\n\nKami akan sahkan secara automatik selepas pembayaran, tidak perlu hantar tangkapan skrin. Terima kasih!`,
+  zh: (orderNo, paymentUrl, voucherLine) => `订单已经安排好啦！订单号：${orderNo}${voucherLine || ""}\n\n请点击以下链接完成付款：\n${paymentUrl}\n\n付款成功后我们会自动确认，无需再发送截图，谢谢！`,
+  en: (orderNo, paymentUrl, voucherLine) => `Your order is all set! Order No: ${orderNo}${voucherLine || ""}\n\nPlease complete payment via this link:\n${paymentUrl}\n\nWe'll confirm automatically once paid, no need to send a screenshot. Thank you!`,
+  ms: (orderNo, paymentUrl, voucherLine) => `Pesanan anda sudah sedia! No. Pesanan: ${orderNo}${voucherLine || ""}\n\nSila selesaikan pembayaran melalui pautan ini:\n${paymentUrl}\n\nKami akan sahkan secara automatik selepas pembayaran, tidak perlu hantar tangkapan skrin. Terima kasih!`,
+};
+const VOUCHER_APPLIED_LINE = {
+  zh: (deducted, balanceAfter) => `\n💳 已用优惠额度抵扣 RM${deducted}（还剩 RM${balanceAfter}）`,
+  en: (deducted, balanceAfter) => `\n💳 RM${deducted} store credit applied (RM${balanceAfter} left)`,
+  ms: (deducted, balanceAfter) => `\n💳 Kredit RM${deducted} digunakan (baki RM${balanceAfter})`,
 };
 
 const PAYMENT_LINK_FAILED_TEXT = {
@@ -675,13 +737,15 @@ async function finalizeOrder(fromNumber) {
   const session = orderSessions[fromNumber];
   const lang = session.lang;
   const gift = computeGift(session.subtotal, lang);
+  const { deducted, balanceAfter } = await tryRedeemVoucher(session.phone, session.subtotal);
+  const amountToCharge = session.subtotal - deducted;
   const itemsText = summarizeItems(session.items) + (gift ? `, ${gift}` : "");
   const orderNo = genOrderNo();
   const address = `${session.address}, ${session.postcode} ${session.city}, ${session.state}`;
 
   let paymentUrl;
   try {
-    const bill = await createToyyibPayBill({ orderNo, amountRM: session.subtotal });
+    const bill = await createToyyibPayBill({ orderNo, amountRM: amountToCharge });
     paymentUrl = bill.paymentUrl;
   } catch (err) {
     console.error("❌ WhatsApp 下单建立 ToyyibPay 账单失败：", err.message);
@@ -699,7 +763,7 @@ async function finalizeOrder(fromNumber) {
         phone: session.phone,
         address,
         items: itemsText,
-        total: "RM " + session.subtotal,
+        total: "RM " + amountToCharge + (deducted ? ` (原价 RM${session.subtotal}，优惠券抵 RM${deducted})` : ""),
         payMethod: "ToyyibPay",
         status: "待付款",
       }),
@@ -710,7 +774,8 @@ async function finalizeOrder(fromNumber) {
 
   delete orderSessions[fromNumber];
   touchFollowUp(session.phone, session.name, "已下单", lang, session.optIn);
-  return ORDER_DONE_TEXT[lang](orderNo, paymentUrl);
+  const voucherLine = deducted ? VOUCHER_APPLIED_LINE[lang](deducted, balanceAfter) : "";
+  return ORDER_DONE_TEXT[lang](orderNo, paymentUrl, voucherLine);
 }
 
 /**
@@ -817,18 +882,22 @@ app.post("/api/order-notify", async (req, res) => {
 // 把付款链接返回给网站，网站收到后直接跳转过去让客人付款。
 // 网站需要 POST：{ name, phone, address, items, total, lang }，total 是纯数字（RM 多少钱）
 app.post("/api/create-payment", async (req, res) => {
-  const { name, phone, address, items, total, lang } = req.body || {};
+  const { name, phone, address, items, total, lang: rawLang } = req.body || {};
   if (!items || typeof total !== "number" || total <= 0) {
     return res.status(400).json({ error: "缺少必要参数：items 或 total" });
   }
+  const lang = ["zh", "en", "ms"].includes(rawLang) ? rawLang : "zh";
   const orderNo = genOrderNo();
+  const gift = computeGift(total, lang);
+  const { deducted, balanceAfter } = phone ? await tryRedeemVoucher(phone, total) : { deducted: 0, balanceAfter: null };
+  const amountToCharge = total - deducted;
 
   let paymentUrl, billCode;
   try {
-    const bill = await createToyyibPayBill({ orderNo, amountRM: total });
+    const bill = await createToyyibPayBill({ orderNo, amountRM: amountToCharge });
     paymentUrl = bill.paymentUrl;
     billCode = bill.billCode;
-    console.log(`✅ 网站下单：${orderNo}，金额 RM${total}，付款链接 ${paymentUrl}`);
+    console.log(`✅ 网站下单：${orderNo}，金额 RM${amountToCharge}，付款链接 ${paymentUrl}`);
   } catch (err) {
     console.error("❌ 网站下单建立 ToyyibPay 账单失败：", err.message);
     return res.status(500).json({ error: "生成付款链接失败，请稍后重试或联系客服" });
@@ -839,8 +908,9 @@ app.post("/api/create-payment", async (req, res) => {
     await fetch(ORDER_LOG_URL, {
       method: "POST",
       body: JSON.stringify({
-        orderNo, name, phone, address, items,
-        total: "RM " + total,
+        orderNo, name, phone, address,
+        items: items + (gift ? `, ${gift}` : ""),
+        total: "RM " + amountToCharge + (deducted ? ` (原价 RM${total}，优惠券抵 RM${deducted})` : ""),
         payMethod: "ToyyibPay",
         status: "待付款",
       }),
@@ -849,7 +919,7 @@ app.post("/api/create-payment", async (req, res) => {
     console.error("⚠️ 网站下单写入 Google Sheets 失败：", err.message);
   }
 
-  res.json({ result: "success", orderNo, paymentUrl });
+  res.json({ result: "success", orderNo, paymentUrl, gift, voucherDeducted: deducted, voucherBalanceAfter: balanceAfter });
 
   // 网站客人没主动在 WhatsApp 发过消息，24 小时会话窗口是关闭的，只能用已审核模板发提醒。
   if (phone) {
@@ -1030,6 +1100,24 @@ app.post("/webhook/whatsapp", validateTwilioRequest, async (req, res) => {
     console.log(`🔑 已生成登录验证码给 ${fromNumber}`);
     const twiml = new twilio.twiml.MessagingResponse();
     twiml.message(OTP_REPLY_TEXT[lang](code));
+    return res.type("text/xml").send(twiml.toString());
+  }
+
+  // 扫QR码送优惠额度的暗号，直接绑定+回复，不走 AI
+  const giftMatch = incomingMessage.trim().match(GIFT_TRIGGER_RE);
+  if (giftMatch) {
+    const lang = ["zh", "en", "ms"].includes((giftMatch[2] || "").toLowerCase()) ? giftMatch[2].toLowerCase() : "zh";
+    const phone = fromNumber.replace(/^whatsapp:/i, "");
+    const data = await voucherAction("voucherBind", { phone });
+    const twiml = new twilio.twiml.MessagingResponse();
+    if (data && data.status === "bound") {
+      console.log(`🎁 已为 ${fromNumber} 绑定优惠额度`);
+      twiml.message(GIFT_QR_REPLY_TEXT[lang](data.balance));
+    } else if (data && data.status === "already_bound") {
+      twiml.message(GIFT_QR_ALREADY_TEXT[lang](data.balance));
+    } else {
+      twiml.message(DEFAULT_REPLY);
+    }
     return res.type("text/xml").send(twiml.toString());
   }
 
