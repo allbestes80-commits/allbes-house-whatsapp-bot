@@ -867,6 +867,22 @@ app.get("/", (req, res) => {
   res.send("✅ Lumee Store WhatsApp 机器人正在运行（AI 智能回复版 + Google Sheets）");
 });
 
+// 【临时诊断用，排查完乱码问题后会删掉】直接读某个 Content API 模板的原始内容，确认有没有编码损坏。
+app.get("/api/debug-content-template", async (req, res) => {
+  const sid = req.query.sid;
+  if (!sid) return res.status(400).json({ error: "缺少 ?sid=" });
+  try {
+    const auth = Buffer.from(`${process.env.TWILIO_ACCOUNT_SID}:${process.env.TWILIO_AUTH_TOKEN}`).toString("base64");
+    const r = await fetch(`https://content.twilio.com/v1/Content/${sid}`, {
+      headers: { Authorization: `Basic ${auth}` },
+    });
+    const data = await r.json();
+    res.status(r.status).json(data);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // 【新增】网站下单后调用这个接口，自动给客人发付款提醒模板消息
 // 网站需要 POST 这样的内容：{ name, phone, orderNo, lang }
 //   phone 需要是带国家码的号码，例如 "+60123456789"
