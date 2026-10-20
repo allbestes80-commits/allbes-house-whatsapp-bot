@@ -886,6 +886,16 @@ app.get("/api/debug-content-template", async (req, res) => {
   }
 });
 
+// 【临时诊断用，排查完问答表内容后会删掉】看一下目前喂给 AI 的 Google Sheets 问答资料长什么样。
+app.get("/api/debug-sheet-context", async (req, res) => {
+  try {
+    const text = await getSheetContext();
+    res.type("text/plain").send(text || "(空，可能没配置 FAQ_SHEET_URL / PRODUCTS_SHEET_URL，或读取失败)");
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // 【新增】网站下单后调用这个接口，自动给客人发付款提醒模板消息
 // 网站需要 POST 这样的内容：{ name, phone, orderNo, lang }
 //   phone 需要是带国家码的号码，例如 "+60123456789"
