@@ -984,9 +984,19 @@ app.post("/api/create-payment", async (req, res) => {
 
 // 【新增】ToyyibPay 付款回调：客人付款完成后，ToyyibPay 会自动 POST 到这里通知结果。
 // 一定要先验证 hash，确认这条通知真的是 ToyyibPay 发的、金额和订单号没被人篡改过。
-app.post("/api/toyyibpay-callback", async (req, res) => {
-  const { refno, status, billcode, order_id, hash } = req.body || {};
-  console.log(`📩 收到 ToyyibPay 回调：${JSON.stringify(req.body || {})}`);
+// 【修复】正式环境第一笔回调发现 req.body 是空的——ToyyibPay 发送时的 Content-Type 跟上面
+// 全局注册的 json()/urlencoded() 解析器对不上，两个解析器都跳过了没解析。这里改成不管
+// Content-Type 是什么都先读原始文本，再按 JSON 或 urlencoded 两种格式都试一次。
+app.post("/api/toyyibpay-callback", bodyParser.text({ type: () => true }), async (req, res) => {
+  let body = {};
+  const raw = typeof req.body === "string" ? req.body : "";
+  try {
+    body = raw.trim().startsWith("{") ? JSON.parse(raw) : Object.fromEntries(new URLSearchParams(raw));
+  } catch (err) {
+    console.error("⚠️ ToyyibPay 回调原始内容解析失败：", err.message, "原始内容：", raw);
+  }
+  const { refno, status, billcode, order_id, hash } = body;
+  console.log(`📩 收到 ToyyibPay 回调：${JSON.stringify(body)}`);
   res.sendStatus(200); // ToyyibPay 只要求收到 200，处理逻辑不需要让它等
 
   if (!order_id || !status || !hash) {
