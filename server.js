@@ -1119,7 +1119,7 @@ app.post("/webhook/whatsapp", validateTwilioRequest, async (req, res) => {
   // 网站"验证手机号登录"的暗号，直接回验证码，不走 AI、不占用下单流程
   const loginMatch = incomingMessage.trim().match(LOGIN_TRIGGER_RE);
   if (loginMatch) {
-    const lang = ["zh", "en", "ms"].includes((loginMatch[2] || "").toLowerCase()) ? loginMatch[2].toLowerCase() : "zh";
+    const lang = ["zh", "en", "ms"].includes((loginMatch[2] || "").toLowerCase()) ? loginMatch[2].toLowerCase() : "en";
     const phoneKey = normalizePhoneLast9(fromNumber);
     const code = generateOtpCode();
     otpSessions[phoneKey] = { code, expiresAt: Date.now() + OTP_TTL_MS, phone: fromNumber.replace(/^whatsapp:/i, "") };
@@ -1132,7 +1132,7 @@ app.post("/webhook/whatsapp", validateTwilioRequest, async (req, res) => {
   // 扫QR码送优惠额度的暗号，直接绑定+回复，不走 AI
   const giftMatch = incomingMessage.trim().match(GIFT_TRIGGER_RE);
   if (giftMatch) {
-    const lang = ["zh", "en", "ms"].includes((giftMatch[2] || "").toLowerCase()) ? giftMatch[2].toLowerCase() : "zh";
+    const lang = ["zh", "en", "ms"].includes((giftMatch[2] || "").toLowerCase()) ? giftMatch[2].toLowerCase() : "en";
     const phone = fromNumber.replace(/^whatsapp:/i, "");
     const data = await voucherAction("voucherBind", { phone });
     const twiml = new twilio.twiml.MessagingResponse();
