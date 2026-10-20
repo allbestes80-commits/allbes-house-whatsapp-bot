@@ -309,6 +309,18 @@ function computeGift(subtotal, lang) {
   return tier ? tier[lang] || tier.zh : null;
 }
 
+// 包邮门槛：西马满 RM20 包邮（否则收 RM6 运费），东马（沙巴/砂拉越/纳闽）满 RM50 包邮（否则收 RM15 运费）。
+const SHIPPING_RULES = { west: { fee: 6, freeAt: 20 }, east: { fee: 15, freeAt: 50 } };
+function isEastMalaysiaPostcode(postcode) {
+  const p = parseInt(String(postcode || "").replace(/\D/g, "").slice(0, 2), 10);
+  return p === 87 || (p >= 88 && p <= 91) || (p >= 93 && p <= 98);
+}
+function computeShipping(subtotal, postcode) {
+  const rule = isEastMalaysiaPostcode(postcode) ? SHIPPING_RULES.east : SHIPPING_RULES.west;
+  const fee = subtotal >= rule.freeAt ? 0 : rule.fee;
+  return { fee, freeAt: rule.freeAt };
+}
+
 function normalizePhoneInput(raw) {
   const digits = String(raw || "").replace(/[^\d+]/g, "");
   if (digits.startsWith("+")) return digits;
@@ -381,15 +393,15 @@ const GIFT_QR_REPLY_TEXT = {
   zh: (balance) =>
     `🎁 恭喜！已经为您绑定 RM${balance} 优惠额度～\n以后每张订单满 RM${VOUCHER_MIN_ORDER}，可以自动抵扣 RM${VOUCHER_DEDUCT_PER_USE}，额度用完为止（最多可以用 ${
       balance / VOUCHER_DEDUCT_PER_USE
-    } 次）。\n直接在这里跟我下单，或者去网站选购：${VOUCHER_SHOP_LINK}`,
+    } 次）。\n🚚 西马订单满 RM${SHIPPING_RULES.west.freeAt} 包邮，东马（沙巴/砂拉越/纳闽）满 RM${SHIPPING_RULES.east.freeAt} 包邮！\n直接在这里跟我下单，或者去网站选购：${VOUCHER_SHOP_LINK}`,
   en: (balance) =>
     `🎁 Congrats! RM${balance} in store credit has been linked to your number.\nEvery order of RM${VOUCHER_MIN_ORDER}+ gets RM${VOUCHER_DEDUCT_PER_USE} off automatically, until the credit runs out (up to ${
       balance / VOUCHER_DEDUCT_PER_USE
-    } times).\nOrder here on WhatsApp, or shop at: ${VOUCHER_SHOP_LINK}`,
+    } times).\n🚚 Free shipping on orders RM${SHIPPING_RULES.west.freeAt}+ in West Malaysia, RM${SHIPPING_RULES.east.freeAt}+ in East Malaysia (Sabah/Sarawak/Labuan)!\nOrder here on WhatsApp, or shop at: ${VOUCHER_SHOP_LINK}`,
   ms: (balance) =>
     `🎁 Tahniah! Kredit RM${balance} telah ditautkan ke nombor anda.\nSetiap pesanan RM${VOUCHER_MIN_ORDER}+ dapat potongan RM${VOUCHER_DEDUCT_PER_USE} secara automatik, sehingga kredit habis (sehingga ${
       balance / VOUCHER_DEDUCT_PER_USE
-    } kali).\nTempah terus di sini, atau beli-belah di: ${VOUCHER_SHOP_LINK}`,
+    } kali).\n🚚 Penghantaran percuma untuk pesanan RM${SHIPPING_RULES.west.freeAt}+ di Semenanjung, RM${SHIPPING_RULES.east.freeAt}+ di Sabah/Sarawak/Labuan!\nTempah terus di sini, atau beli-belah di: ${VOUCHER_SHOP_LINK}`,
 };
 const GIFT_QR_ALREADY_TEXT = {
   zh: (balance) => `您已经领取过这个优惠啦，目前还剩 RM${balance} 额度，满 RM${VOUCHER_MIN_ORDER} 下单会自动抵扣哦。`,
@@ -630,6 +642,11 @@ const VOUCHER_APPLIED_LINE = {
   en: (deducted, balanceAfter) => `\n💳 RM${deducted} store credit applied (RM${balanceAfter} left)`,
   ms: (deducted, balanceAfter) => `\n💳 Kredit RM${deducted} digunakan (baki RM${balanceAfter})`,
 };
+const SHIPPING_LINE = {
+  zh: (fee) => (fee ? `\n🚚 运费 RM${fee}` : `\n🚚 本单包邮！`),
+  en: (fee) => (fee ? `\n🚚 Shipping fee RM${fee}` : `\n🚚 Free shipping on this order!`),
+  ms: (fee) => (fee ? `\n🚚 Kos penghantaran RM${fee}` : `\n🚚 Penghantaran percuma untuk pesanan ini!`),
+};
 
 const PAYMENT_LINK_FAILED_TEXT = {
   zh: "不好意思，生成付款链接时出了点问题，麻烦稍后再试一次，或者直接联系客服帮您处理，谢谢！",
@@ -738,7 +755,8 @@ async function finalizeOrder(fromNumber) {
   const lang = session.lang;
   const gift = computeGift(session.subtotal, lang);
   const { deducted, balanceAfter } = await tryRedeemVoucher(session.phone, session.subtotal);
-  const amountToCharge = session.subtotal - deducted;
+  const shipping = computeShipping(session.subtotal, session.postcode);
+  const amountToCharge = session.subtotal - deducted + shipping.fee;
   const itemsText = summarizeItems(session.items) + (gift ? `, ${gift}` : "");
   const orderNo = genOrderNo();
   const address = `${session.address}, ${session.postcode} ${session.city}, ${session.state}`;
@@ -754,6 +772,9 @@ async function finalizeOrder(fromNumber) {
   }
   pendingPayments[orderNo] = { phone: session.phone, name: session.name, lang };
 
+  const noteParts = [`商品 RM${session.subtotal}`];
+  if (deducted) noteParts.push(`优惠券抵 RM${deducted}`);
+  noteParts.push(`运费 RM${shipping.fee}`);
   try {
     await fetch(ORDER_LOG_URL, {
       method: "POST",
@@ -763,7 +784,7 @@ async function finalizeOrder(fromNumber) {
         phone: session.phone,
         address,
         items: itemsText,
-        total: "RM " + amountToCharge + (deducted ? ` (原价 RM${session.subtotal}，优惠券抵 RM${deducted})` : ""),
+        total: "RM " + amountToCharge + ` (${noteParts.join("，")})`,
         payMethod: "ToyyibPay",
         status: "待付款",
       }),
@@ -775,7 +796,8 @@ async function finalizeOrder(fromNumber) {
   delete orderSessions[fromNumber];
   touchFollowUp(session.phone, session.name, "已下单", lang, session.optIn);
   const voucherLine = deducted ? VOUCHER_APPLIED_LINE[lang](deducted, balanceAfter) : "";
-  return ORDER_DONE_TEXT[lang](orderNo, paymentUrl, voucherLine);
+  const shippingLine = SHIPPING_LINE[lang](shipping.fee);
+  return ORDER_DONE_TEXT[lang](orderNo, paymentUrl, voucherLine + shippingLine);
 }
 
 /**
@@ -880,9 +902,9 @@ app.post("/api/order-notify", async (req, res) => {
 
 // 【新增】网站结账：生成订单号、建一个 ToyyibPay 付款账单，写进 Google Sheets（状态先记"待付款"），
 // 把付款链接返回给网站，网站收到后直接跳转过去让客人付款。
-// 网站需要 POST：{ name, phone, address, items, total, lang }，total 是纯数字（RM 多少钱）
+// 网站需要 POST：{ name, phone, address, items, total, lang, postcode }，total 是纯数字（RM 多少钱）
 app.post("/api/create-payment", async (req, res) => {
-  const { name, phone, address, items, total, lang: rawLang } = req.body || {};
+  const { name, phone, address, items, total, lang: rawLang, postcode } = req.body || {};
   if (!items || typeof total !== "number" || total <= 0) {
     return res.status(400).json({ error: "缺少必要参数：items 或 total" });
   }
@@ -890,7 +912,8 @@ app.post("/api/create-payment", async (req, res) => {
   const orderNo = genOrderNo();
   const gift = computeGift(total, lang);
   const { deducted, balanceAfter } = phone ? await tryRedeemVoucher(phone, total) : { deducted: 0, balanceAfter: null };
-  const amountToCharge = total - deducted;
+  const shipping = computeShipping(total, postcode);
+  const amountToCharge = total - deducted + shipping.fee;
 
   let paymentUrl, billCode;
   try {
@@ -904,13 +927,16 @@ app.post("/api/create-payment", async (req, res) => {
   }
   pendingPayments[orderNo] = { phone, name, lang };
 
+  const noteParts = [`商品 RM${total}`];
+  if (deducted) noteParts.push(`优惠券抵 RM${deducted}`);
+  noteParts.push(`运费 RM${shipping.fee}`);
   try {
     await fetch(ORDER_LOG_URL, {
       method: "POST",
       body: JSON.stringify({
         orderNo, name, phone, address,
         items: items + (gift ? `, ${gift}` : ""),
-        total: "RM " + amountToCharge + (deducted ? ` (原价 RM${total}，优惠券抵 RM${deducted})` : ""),
+        total: "RM " + amountToCharge + ` (${noteParts.join("，")})`,
         payMethod: "ToyyibPay",
         status: "待付款",
       }),
@@ -919,7 +945,7 @@ app.post("/api/create-payment", async (req, res) => {
     console.error("⚠️ 网站下单写入 Google Sheets 失败：", err.message);
   }
 
-  res.json({ result: "success", orderNo, paymentUrl, gift, voucherDeducted: deducted, voucherBalanceAfter: balanceAfter });
+  res.json({ result: "success", orderNo, paymentUrl, gift, voucherDeducted: deducted, voucherBalanceAfter: balanceAfter, shippingFee: shipping.fee });
 
   // 网站客人没主动在 WhatsApp 发过消息，24 小时会话窗口是关闭的，只能用已审核模板发提醒。
   if (phone) {
