@@ -892,12 +892,12 @@ app.get("/api/debug-recreate-zh-payment-template", async (req, res) => {
       method: "POST",
       headers: { Authorization: `Basic ${auth}`, "Content-Type": "application/json" },
       body: JSON.stringify({
-        friendly_name: "order_payment_cta_zh_v3",
+        friendly_name: "order_payment_cta_zh_v4",
         language: "zh_CN",
         variables: { "1": "张小姐", "2": "AH2026092801", "3": "abcd1234" },
         types: {
           "twilio/call-to-action": {
-            body: "您好 {{1}}！感谢您在 Lumee Store 下单（订单号：{{2}}）。点击下方按钮完成付款，付款成功后我们会自动确认，无需再发送截图。",
+            body: "您好 {{1}}！感谢您在 Lumee Store 下单(订单号: {{2}})。点击下方按钮完成付款，付款成功后我们会自动确认，无需再发送截图。",
             actions: [{ type: "URL", title: "立即付款", url: "https://dev.toyyibpay.com/{{3}}" }],
           },
         },
