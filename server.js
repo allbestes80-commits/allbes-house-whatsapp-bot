@@ -963,6 +963,9 @@ app.post("/api/create-payment", async (req, res) => {
   } catch (err) {
     console.error("⚠️ 网站下单写入 Google Sheets 失败：", err.message);
   }
+  // 【修复】之前网站下单没有同步更新"客户跟进"表的阶段，导致客人明明下单了，
+  // 表格里却一直停在"已验证登录"，没法准确统计"登录了但没下单"的人数。
+  touchFollowUp(phone, name, "已下单", lang, undefined);
 
   res.json({ result: "success", orderNo, paymentUrl, gift, voucherDeducted: deducted, voucherBalanceAfter: balanceAfter, shippingFee: shipping.fee });
 
