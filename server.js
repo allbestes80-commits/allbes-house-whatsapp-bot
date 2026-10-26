@@ -817,6 +817,22 @@ async function touchFollowUp(phone, name, stage, lang, optIn) {
 }
 
 /**
+ * 【新增】把每一句客人发来的消息、以及机器人每一句回复，都记一笔到「聊天记录」表，
+ * 方便店主直接在 Google Sheets 里看完整对话，不用登 Twilio 后台。失败静默跳过，不影响正常回复。
+ */
+async function logChatMessage(phone, direction, text) {
+  if (!phone || !text) return;
+  try {
+    await fetch(ORDER_LOG_URL, {
+      method: "POST",
+      body: JSON.stringify({ action: "logChat", phone, direction, text }),
+    });
+  } catch (err) {
+    console.error("⚠️ 记录聊天记录失败：", err.message);
+  }
+}
+
+/**
  * 每小时跑一次：找出「已同意接收推广、超过 24 小时没再互动、还没下单、还没追过」的客户，
  * 发送已审核的追单模板消息。模板还在审核中时 FOLLOWUP_TEMPLATE_CONTENT_SID 对应语言会是空，
  * 这种情况直接跳过，不会报错。
@@ -1137,6 +1153,20 @@ app.post("/webhook/whatsapp", validateTwilioRequest, async (req, res) => {
   const media = numMedia > 0 ? { url: req.body.MediaUrl0, contentType: req.body.MediaContentType0 } : null;
 
   console.log(`📩 收到来自 ${fromNumber} 的消息：${incomingMessage}${media ? `（带${numMedia}个附件，类型：${media.contentType}）` : ""}`);
+
+  const chatPhone = fromNumber.replace(/^whatsapp:/i, "");
+  if (incomingMessage) logChatMessage(chatPhone, "客人", incomingMessage);
+  // 【新增】把这个请求里机器人实际回复的内容也记下来——不管走哪条分支（AI回复/下单流程/
+  // 各种暗号触发），最终都是把 TwiML 文本交给 res.send 发出去，所以在这里统一拦一次就够了，
+  // 不用每个 return 都改。
+  const originalResSend = res.send.bind(res);
+  res.send = (body) => {
+    if (typeof body === "string") {
+      const match = body.match(/<Message>([\s\S]*?)<\/Message>/);
+      if (match) logChatMessage(chatPhone, "机器人", match[1]);
+    }
+    return originalResSend(body);
+  };
 
   // 【新增】「查询 ZH…」开头：去订货运输系统查订单状态，不走 AI、不影响进行中的下单流程
   const orderQueryMatch = incomingMessage.trim().match(ORDER_QUERY_RE);
