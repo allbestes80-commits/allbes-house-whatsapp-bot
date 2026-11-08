@@ -20,7 +20,7 @@ const FOLLOWUP_LOG_URL =
   "https://script.google.com/macros/s/AKfycbxpW5nz3nH8TM1fUH5FXKE2U554aTw6WwuN8RSQjPlPgfyY99Y2GkMjFCpyql8CylBFyA/exec";
 
 const MARKETING_TEMPLATE_CONTENT_SID = {
-  zh: "HX368e0677552b5b03bbdb5a35c37fd3a2",
+  zh: "HXd2054c80f57f687c52cb8f34068f02da",
   en: "HXcabe90ae61315ff97deeff8d81c351d7",
   ms: "HX7c2388a23011e5f2f7d7ab3542aa6bf8",
 };

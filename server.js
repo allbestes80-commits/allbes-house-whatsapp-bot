@@ -52,18 +52,18 @@ const ORDER_REMINDER_CONTENT_SID = {
 // 【新增】网站下单的付款链接通知模板——用 twilio/call-to-action 按钮而不是纯文字链接，
 // 因为纯文字带链接的模板 WhatsApp 会自动归类成 Marketing 然后拒审（试了两次都这样），
 // 按钮里的链接变量只需要传 billCode（不是完整网址），网址前缀是模板里写死的
-// https://dev.toyyibpay.com/ —— 换正式环境时这个模板要重新建一个（网址前缀会变成 toyyibpay.com）。
+// https://toyyibpay.com/（正式环境）。以后如果换回沙盒，这三个模板要重新建。
 const ORDER_PAYMENT_CONTENT_SID = {
-  zh: "HX1a1b5367770e5caa8b2c09110a4bd4cc",
-  en: "HXdba9de16b938ef120e3adf9e37262d5b",
-  ms: "HX314c67833569d08fb68d2ad8024c5609",
+  zh: "HXe0bc0ac7decc7d8841a4320a9f913f8f",
+  en: "HX6112803684b4c2af42cd5faedf4b3a1a",
+  ms: "HXdc8187915e1521cc2eeada28f8ada0bf",
 };
 
 // 【新增】付款成功后主动通知客人的模板（不带链接的纯文字收据，UTILITY 分类）。
 // 客户如果最近 24 小时内跟机器人互动过，回调那边会先尝试直接发自由格式文字
 // （不用等审核，能立刻用），只有自由格式发送失败（比如超过 24 小时窗口）才会退回用这个模板。
 const PAYMENT_CONFIRMED_CONTENT_SID = {
-  zh: "HXbd13dd52c56fe62e9fc85295df441bf8",
+  zh: "HX3e5f793b38f22712210bd6f3a36dce30",
   en: "HXee6c09d22c76d5587dbfa5d252b1ca29",
   ms: "HXdba79f5ce0fe7a6c96ab8a2f46c54fdd",
 };
@@ -174,7 +174,7 @@ const FOLLOWUP_SILENCE_MS = 24 * 60 * 60 * 1000; // 客户超过 24 小时没再
 // 客户名单（已验证手机号 + 已同意推广）可以从 FOLLOWUP_LOG_URL 这个 Google Sheet 里筛「已同意推广」="是" 的行拿到，
 // 跟 checkAndSendFollowUps() 现在筛客户名单的方式是同一张表、同一个逻辑。
 const MARKETING_TEMPLATE_CONTENT_SID = {
-  zh: "HX368e0677552b5b03bbdb5a35c37fd3a2",
+  zh: "HXd2054c80f57f687c52cb8f34068f02da",
   en: "HXcabe90ae61315ff97deeff8d81c351d7",
   ms: "HX7c2388a23011e5f2f7d7ab3542aa6bf8",
 };
@@ -900,57 +900,6 @@ app.get("/api/debug-content-template", async (req, res) => {
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
-});
-
-// 【临时用，建完会删掉】重建 5 个模板：3 个付款提醒（按钮改成正式 toyyibpay.com），
-// 加上当初用 curl 建、中文变乱码的 payment_confirmed_zh / promo_zh。每个进程只跑一次。
-const TEMPLATE_REBUILD_KEY = "lumee-rebuild-2026-11-08";
-let templatesRebuilt = false;
-app.get("/api/admin-rebuild-templates/ready", (req, res) => res.json({ ready: true, done: templatesRebuilt }));
-app.post("/api/admin-rebuild-templates", async (req, res) => {
-  if (req.query.key !== TEMPLATE_REBUILD_KEY) return res.status(403).json({ error: "forbidden" });
-  if (templatesRebuilt) return res.status(409).json({ error: "already ran" });
-  templatesRebuilt = true;
-  const auth = Buffer.from(`${process.env.TWILIO_ACCOUNT_SID}:${process.env.TWILIO_AUTH_TOKEN}`).toString("base64");
-  const headers = { Authorization: `Basic ${auth}`, "Content-Type": "application/json" };
-  const payUrl = "https://toyyibpay.com/{{3}}";
-  const specs = [
-    { key: "pay_zh", name: "order_payment_cta_zh_prod", language: "zh_CN", category: "UTILITY",
-      variables: { "1": "张小姐", "2": "AH2026110701", "3": "abcd1234" },
-      types: { "twilio/call-to-action": { body: "您好 {{1}}！感谢您在 Lumee Store 下单(订单号: {{2}})。点击下方按钮完成付款，付款成功后我们会自动确认，无需再发送截图。", actions: [{ type: "URL", title: "立即付款", url: payUrl }] } } },
-    { key: "pay_en", name: "order_payment_cta_en_prod", language: "en", category: "UTILITY",
-      variables: { "1": "there", "2": "AH2026110701", "3": "abcd1234" },
-      types: { "twilio/call-to-action": { body: "Hi {{1}}! Thanks for your order with Lumee Store (Order No: {{2}}). Tap the button below to complete payment. We will confirm automatically once paid.", actions: [{ type: "URL", title: "Pay Now", url: payUrl }] } } },
-    { key: "pay_ms", name: "order_payment_cta_ms_prod", language: "ms", category: "UTILITY",
-      variables: { "1": "there", "2": "AH2026110701", "3": "abcd1234" },
-      types: { "twilio/call-to-action": { body: "Hai {{1}}! Terima kasih atas pesanan anda di Lumee Store (No. Pesanan: {{2}}). Ketik butang di bawah untuk selesaikan pembayaran. Kami akan sahkan secara automatik selepas pembayaran.", actions: [{ type: "URL", title: "Bayar Sekarang", url: payUrl }] } } },
-    { key: "confirmed_zh", name: "payment_confirmed_zh_v3", language: "zh_CN", category: "UTILITY",
-      variables: { "1": "张小姐", "2": "AH2026110701" },
-      types: { "twilio/text": { body: "您好 {{1}}！您在 Lumee Store 的订单(订单号: {{2}})付款已经确认成功，我们会尽快为您安排打包发货，发货后会再通知您，谢谢您的支持！" } } },
-    { key: "promo_zh", name: "promo_zh_v2", language: "zh_CN", category: "MARKETING",
-      variables: { "1": "张小姐", "2": "全场护手霜买一送一" },
-      types: { "twilio/text": { body: "您好 {{1}}，Lumee Store 有新优惠啦：{{2}}。数量有限，欢迎来看看！如果不想再收到这类消息，请回复 STOP。" } } },
-  ];
-  const results = {};
-  for (const s of specs) {
-    try {
-      const c = await fetch("https://content.twilio.com/v1/Content", {
-        method: "POST", headers,
-        body: JSON.stringify({ friendly_name: s.name, language: s.language, variables: s.variables, types: s.types }),
-      });
-      const created = await c.json();
-      if (!c.ok) { results[s.key] = { error: created }; continue; }
-      const a = await fetch(`https://content.twilio.com/v1/Content/${created.sid}/ApprovalRequests/whatsapp`, {
-        method: "POST", headers,
-        body: JSON.stringify({ name: s.name, category: s.category, allow_category_change: false }),
-      });
-      const approval = await a.json();
-      results[s.key] = { sid: created.sid, body: created.types, approval: approval.status, rejection: approval.rejection_reason };
-    } catch (err) {
-      results[s.key] = { error: err.message };
-    }
-  }
-  res.json(results);
 });
 
 // 【新增】网站下单后调用这个接口，自动给客人发付款提醒模板消息
