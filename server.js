@@ -902,6 +902,57 @@ app.get("/api/debug-content-template", async (req, res) => {
   }
 });
 
+// 【临时用，建完会删掉】重建 5 个模板：3 个付款提醒（按钮改成正式 toyyibpay.com），
+// 加上当初用 curl 建、中文变乱码的 payment_confirmed_zh / promo_zh。每个进程只跑一次。
+const TEMPLATE_REBUILD_KEY = "lumee-rebuild-2026-11-08";
+let templatesRebuilt = false;
+app.get("/api/admin-rebuild-templates/ready", (req, res) => res.json({ ready: true, done: templatesRebuilt }));
+app.post("/api/admin-rebuild-templates", async (req, res) => {
+  if (req.query.key !== TEMPLATE_REBUILD_KEY) return res.status(403).json({ error: "forbidden" });
+  if (templatesRebuilt) return res.status(409).json({ error: "already ran" });
+  templatesRebuilt = true;
+  const auth = Buffer.from(`${process.env.TWILIO_ACCOUNT_SID}:${process.env.TWILIO_AUTH_TOKEN}`).toString("base64");
+  const headers = { Authorization: `Basic ${auth}`, "Content-Type": "application/json" };
+  const payUrl = "https://toyyibpay.com/{{3}}";
+  const specs = [
+    { key: "pay_zh", name: "order_payment_cta_zh_prod", language: "zh_CN", category: "UTILITY",
+      variables: { "1": "张小姐", "2": "AH2026110701", "3": "abcd1234" },
+      types: { "twilio/call-to-action": { body: "您好 {{1}}！感谢您在 Lumee Store 下单(订单号: {{2}})。点击下方按钮完成付款，付款成功后我们会自动确认，无需再发送截图。", actions: [{ type: "URL", title: "立即付款", url: payUrl }] } } },
+    { key: "pay_en", name: "order_payment_cta_en_prod", language: "en", category: "UTILITY",
+      variables: { "1": "there", "2": "AH2026110701", "3": "abcd1234" },
+      types: { "twilio/call-to-action": { body: "Hi {{1}}! Thanks for your order with Lumee Store (Order No: {{2}}). Tap the button below to complete payment. We will confirm automatically once paid.", actions: [{ type: "URL", title: "Pay Now", url: payUrl }] } } },
+    { key: "pay_ms", name: "order_payment_cta_ms_prod", language: "ms", category: "UTILITY",
+      variables: { "1": "there", "2": "AH2026110701", "3": "abcd1234" },
+      types: { "twilio/call-to-action": { body: "Hai {{1}}! Terima kasih atas pesanan anda di Lumee Store (No. Pesanan: {{2}}). Ketik butang di bawah untuk selesaikan pembayaran. Kami akan sahkan secara automatik selepas pembayaran.", actions: [{ type: "URL", title: "Bayar Sekarang", url: payUrl }] } } },
+    { key: "confirmed_zh", name: "payment_confirmed_zh_v3", language: "zh_CN", category: "UTILITY",
+      variables: { "1": "张小姐", "2": "AH2026110701" },
+      types: { "twilio/text": { body: "您好 {{1}}！您在 Lumee Store 的订单(订单号: {{2}})付款已经确认成功，我们会尽快为您安排打包发货，发货后会再通知您，谢谢您的支持！" } } },
+    { key: "promo_zh", name: "promo_zh_v2", language: "zh_CN", category: "MARKETING",
+      variables: { "1": "张小姐", "2": "全场护手霜买一送一" },
+      types: { "twilio/text": { body: "您好 {{1}}，Lumee Store 有新优惠啦：{{2}}。数量有限，欢迎来看看！如果不想再收到这类消息，请回复 STOP。" } } },
+  ];
+  const results = {};
+  for (const s of specs) {
+    try {
+      const c = await fetch("https://content.twilio.com/v1/Content", {
+        method: "POST", headers,
+        body: JSON.stringify({ friendly_name: s.name, language: s.language, variables: s.variables, types: s.types }),
+      });
+      const created = await c.json();
+      if (!c.ok) { results[s.key] = { error: created }; continue; }
+      const a = await fetch(`https://content.twilio.com/v1/Content/${created.sid}/ApprovalRequests/whatsapp`, {
+        method: "POST", headers,
+        body: JSON.stringify({ name: s.name, category: s.category, allow_category_change: false }),
+      });
+      const approval = await a.json();
+      results[s.key] = { sid: created.sid, body: created.types, approval: approval.status, rejection: approval.rejection_reason };
+    } catch (err) {
+      results[s.key] = { error: err.message };
+    }
+  }
+  res.json(results);
+});
+
 // 【新增】网站下单后调用这个接口，自动给客人发付款提醒模板消息
 // 网站需要 POST 这样的内容：{ name, phone, orderNo, lang }
 //   phone 需要是带国家码的号码，例如 "+60123456789"
