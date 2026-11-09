@@ -883,50 +883,6 @@ app.get("/", (req, res) => {
   res.send("✅ Lumee Store WhatsApp 机器人正在运行（AI 智能回复版 + Google Sheets）");
 });
 
-// 【临时诊断用，排查完乱码问题后会删掉】直接读某个 Content API 模板的原始内容，确认有没有编码损坏。
-app.get("/api/debug-content-template", async (req, res) => {
-  const sid = req.query.sid;
-  if (!sid) return res.status(400).json({ error: "缺少 ?sid=" });
-  try {
-    const auth = Buffer.from(`${process.env.TWILIO_ACCOUNT_SID}:${process.env.TWILIO_AUTH_TOKEN}`).toString("base64");
-    const url = req.query.approval
-      ? `https://content.twilio.com/v1/Content/${sid}/ApprovalRequests`
-      : `https://content.twilio.com/v1/Content/${sid}`;
-    const r = await fetch(url, {
-      headers: { Authorization: `Basic ${auth}` },
-    });
-    const data = await r.json();
-    res.status(r.status).json(data);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// 【临时用，发完会删掉】给一张还没付款的订单补发 WhatsApp 付款提醒（用已审核的付款按钮模板）。
-const RESEND_KEY = "lumee-resend-2026-11-09";
-const resentOrders = new Set();
-app.get("/api/admin-resend-payment/ready", (req, res) => res.json({ ready: true }));
-app.post("/api/admin-resend-payment", async (req, res) => {
-  if (req.query.key !== RESEND_KEY) return res.status(403).json({ error: "forbidden" });
-  const { phone, name, orderNo, billCode, lang } = req.body || {};
-  if (!phone || !orderNo || !billCode) return res.status(400).json({ error: "缺少 phone / orderNo / billCode" });
-  if (resentOrders.has(orderNo)) return res.status(409).json({ error: "already sent" });
-  resentOrders.add(orderNo);
-  try {
-    const msg = await twilioClient.messages.create({
-      from: process.env.TWILIO_WHATSAPP_FROM,
-      to: `whatsapp:${phone}`,
-      contentSid: ORDER_PAYMENT_CONTENT_SID[lang] || ORDER_PAYMENT_CONTENT_SID.en,
-      contentVariables: JSON.stringify({ "1": name || "there", "2": orderNo, "3": billCode }),
-    });
-    await new Promise((r) => setTimeout(r, 8000));
-    const after = await twilioClient.messages(msg.sid).fetch();
-    res.json({ sid: msg.sid, status: after.status, errorCode: after.errorCode, errorMessage: after.errorMessage });
-  } catch (err) {
-    res.status(500).json({ error: err.message, code: err.code });
-  }
-});
-
 // 【新增】网站下单后调用这个接口，自动给客人发付款提醒模板消息
 // 网站需要 POST 这样的内容：{ name, phone, orderNo, lang }
 //   phone 需要是带国家码的号码，例如 "+60123456789"
