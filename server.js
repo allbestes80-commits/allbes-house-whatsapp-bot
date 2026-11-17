@@ -578,7 +578,7 @@ async function getAiReply(userMessage, fromNumber, media) {
 
     const response = await anthropic.messages.create({
       model: AI_MODEL,
-      max_tokens: 300,
+      max_tokens: 1000, // 300 太少，中文长一点的回复（例如购物金说明）会被拦腰截断
       system: systemPrompt,
       messages,
       tools: [ORDER_TOOL, HANDOFF_TOOL],
@@ -601,7 +601,12 @@ async function getAiReply(userMessage, fromNumber, media) {
     }
 
     const textBlock = response.content.find((block) => block.type === "text");
-    const replyText = textBlock ? textBlock.text.trim() : null;
+    let replyText = textBlock ? textBlock.text.trim() : null;
+    // 还是超过长度上限被截断时，切到最后一个完整句子，不要让客人看到说一半的话
+    if (replyText && response.stop_reason === "max_tokens") {
+      const cut = Math.max(...["。", "！", "？", "!", "?", ".", "\n"].map((p) => replyText.lastIndexOf(p)));
+      if (cut > replyText.length * 0.5) replyText = replyText.slice(0, cut + 1).trim();
+    }
     if (replyText) {
       pushHistory(fromNumber, "user", historyText);
       pushHistory(fromNumber, "assistant", replyText);
