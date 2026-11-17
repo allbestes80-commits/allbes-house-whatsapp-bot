@@ -212,6 +212,56 @@ const ORDER_TOOL = {
   },
 };
 
+// 转人工工具（老板 2026-11-17）：人工客服有休息时间，不要随便转。AI 先自己处理；
+// 真的处理不了才调用，系统用 Telegram 通知老板，同事再用 WhatsApp 联系客人。不给客人任何号码。
+const HANDOFF_TOOL = {
+  name: "handoff_to_human",
+  description:
+    "只有你真的处理不了时才调用：要人工确认的事（代购能不能买到/价格、批发价格、退换货/收到坏货或少件、重新发付款链接、特别要求），" +
+    "或客户已经说清楚问题、你也尽力回答了，客户还是坚持要找真人。一般问题（价格、库存、优惠、运费、怎么下单、产品介绍）不要调用，自己回答。" +
+    "调用前先问清楚客户要什么（例如代购要哪个品牌型号、批发要哪些产品多少数量），信息不够就先问，不要马上调用。",
+  input_schema: {
+    type: "object",
+    properties: {
+      summary: { type: "string", description: "用中文写给同事看：客户要什么、你已经回答了什么、需要同事做什么（一两句）" },
+      reply: { type: "string", description: "用客户的语言回给客户：已经把问题转给同事，同事会尽快用 WhatsApp 联系他。不要给任何电话号码或链接。" },
+    },
+    required: ["summary", "reply"],
+  },
+};
+
+const LUMEE_HANDOFF_URL = process.env.LUMEE_HANDOFF_URL;
+const LUMEE_HANDOFF_TOKEN = process.env.LUMEE_HANDOFF_TOKEN;
+const HANDOFF_COOLDOWN_MS = 2 * 60 * 60 * 1000; // 同一个客人 2 小时内只通知一次，免得一直吵人工客服
+const lastHandoffAt = {};
+
+async function notifyHuman(fromNumber, summary, lastMessage) {
+  const phone = fromNumber.replace(/^whatsapp:/i, "");
+  if (Date.now() - (lastHandoffAt[phone] || 0) < HANDOFF_COOLDOWN_MS) return;
+  lastHandoffAt[phone] = Date.now();
+  if (!LUMEE_HANDOFF_URL || !LUMEE_HANDOFF_TOKEN) {
+    console.error("⚠️ 没有配置 LUMEE_HANDOFF_URL / LUMEE_HANDOFF_TOKEN，转人工通知发不出去");
+    return;
+  }
+  const text =
+    `🙋 Lumee 客人要人工处理\n` +
+    `客人：${phone}（点这里回他：https://wa.me/${phone.replace(/\D/g, "")}）\n` +
+    `客人说：${String(lastMessage || "").slice(0, 300)}\n` +
+    `要你做：${summary}\n` +
+    `完整对话在 Google 表格「聊天记录」。`;
+  try {
+    const r = await fetch(LUMEE_HANDOFF_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Lumee-Token": LUMEE_HANDOFF_TOKEN },
+      body: JSON.stringify({ text }),
+    });
+    if (!r.ok) console.error(`⚠️ 转人工通知失败：HTTP ${r.status}`);
+    else console.log(`🙋 已通知人工客服：${phone}`);
+  } catch (err) {
+    console.error("⚠️ 转人工通知失败：", err.message);
+  }
+}
+
 // 【新增】WhatsApp 内下单的对话状态，按客户手机号（Twilio 的 From 字段）存内存里。
 // 重启服务会清空所有进行中的下单流程——量不大，先用内存做，先跑起来比较重要。
 const orderSessions = {};
@@ -441,11 +491,10 @@ async function queryProcurementOrder(orderNo, fromNumber) {
   }
 }
 
-const HUMAN_BACKUP_NUMBER = "+60138916812";
-const TRANSFER_TO_HUMAN_REPLY = {
-  zh: `好的，已为您转接人工客服。人工客服可能需要一些时间才能回复，如果比较着急，也可以直接联系这个号码：${HUMAN_BACKUP_NUMBER}`,
-  en: `Okay, transferring you to our human support team. It may take a while for a human agent to reply — if it's urgent, you can also reach us directly at ${HUMAN_BACKUP_NUMBER}`,
-  ms: `Baik, kami akan hubungkan anda dengan khidmat pelanggan kami. Mungkin mengambil sedikit masa untuk mendapat balasan — jika perlu segera, anda juga boleh hubungi terus di ${HUMAN_BACKUP_NUMBER}`,
+const HANDOFF_FALLBACK_REPLY = {
+  zh: "好的，我已经把你的问题转给同事，同事会尽快用 WhatsApp 联系你～",
+  en: "Okay, I've passed your question to a colleague — they'll contact you on WhatsApp as soon as they can.",
+  ms: "Baik, saya sudah sampaikan soalan anda kepada rakan sekerja — mereka akan hubungi anda melalui WhatsApp secepat mungkin.",
 };
 
 // ---------- 是否要求校验请求确实来自 Twilio ----------
@@ -532,7 +581,7 @@ async function getAiReply(userMessage, fromNumber, media) {
       max_tokens: 300,
       system: systemPrompt,
       messages,
-      tools: [ORDER_TOOL],
+      tools: [ORDER_TOOL, HANDOFF_TOOL],
     });
 
     const toolBlock = response.content.find((block) => block.type === "tool_use" && block.name === "start_order");
@@ -540,6 +589,15 @@ async function getAiReply(userMessage, fromNumber, media) {
       pushHistory(fromNumber, "user", historyText);
       pushHistory(fromNumber, "assistant", "（帮客户下单中）");
       return { type: "start_order", items: toolBlock.input.items || [] };
+    }
+
+    const handoffBlock = response.content.find((block) => block.type === "tool_use" && block.name === "handoff_to_human");
+    if (handoffBlock) {
+      const reply = String(handoffBlock.input.reply || "").trim() || HANDOFF_FALLBACK_REPLY[detectLang(userMessage)];
+      notifyHuman(fromNumber, handoffBlock.input.summary || "（AI 没写摘要）", historyText);
+      pushHistory(fromNumber, "user", historyText);
+      pushHistory(fromNumber, "assistant", reply);
+      return { type: "text", text: reply };
     }
 
     const textBlock = response.content.find((block) => block.type === "text");
@@ -1198,11 +1256,11 @@ app.post("/webhook/whatsapp", validateTwilioRequest, async (req, res) => {
 
   let replyText;
 
-  if (wantsHuman(incomingMessage)) {
-    const lang = detectLang(incomingMessage);
-    delete orderSessions[fromNumber]; // 转人工时把进行中的下单流程清掉，交给真人处理
-    replyText = TRANSFER_TO_HUMAN_REPLY[lang];
-  } else if (orderSessions[fromNumber]) {
+  // 客人说要找真人：先把进行中的下单流程清掉，交给 AI——AI 会先问清楚问题、自己尽量解决，
+  // 真的处理不了才用 handoff_to_human 通知人工（老板 2026-11-17：人工有休息时间，不要随便转）。
+  if (wantsHuman(incomingMessage)) delete orderSessions[fromNumber];
+
+  if (orderSessions[fromNumber]) {
     replyText = (await handleOrderStep(fromNumber, incomingMessage)) || DEFAULT_REPLY;
   } else {
     const aiReply = await getAiReply(incomingMessage, fromNumber, media);
