@@ -496,13 +496,17 @@ const LANG_LABELS = { zh: "中文", en: "英文 (English)", ms: "马来文 (Baha
  */
 async function getAiReply(userMessage, fromNumber, media) {
   try {
-    const [sheetContext, ordersContext] = await Promise.all([
+    const [sheetContext, ordersContext, voucherBalance] = await Promise.all([
       getSheetContext(),
       getOrdersContext(fromNumber),
+      checkVoucherBalance(fromNumber.replace(/^whatsapp:/i, "")),
     ]);
     let systemPrompt = STORE_INFO;
     if (sheetContext) systemPrompt += `\n\n${sheetContext}`;
     if (ordersContext) systemPrompt += `\n\n${ordersContext}`;
+    systemPrompt += voucherBalance > 0
+      ? `\n\n【这位客户的购物金】已领取，目前还剩 RM${voucherBalance}。客户问优惠时要告诉他：每张订单满 RM${VOUCHER_MIN_ORDER} 下单会自动抵扣 RM${VOUCHER_DEDUCT_PER_USE}，不用另外输入什么。`
+      : `\n\n【这位客户的购物金】目前没有可用余额（可能还没领取，也可能已经用完）。客户问优惠时可以告诉他：发送 LUMEE-GIFT 给我们就能领取 RM100 购物金（每个号码只能领一次，已经领过的会收到提示）。`;
     systemPrompt +=
       "\n\n【关于图片】如果客户发的消息里带了图片，你能直接看到图片内容，可以结合上面的产品清单判断客户问的是哪一款、回答关于这张图片的问题（比如新旧款、价格、是否有货），不需要再反问客户是哪一款产品。";
 
