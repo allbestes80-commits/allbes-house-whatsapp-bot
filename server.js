@@ -22,6 +22,7 @@ const bodyParser = require("body-parser");
 const twilio = require("twilio");
 const Anthropic = require("@anthropic-ai/sdk");
 const { STORE_INFO } = require("./storeInfo");
+const { GLOWRE_INFO } = require("./glowreInfo");
 const { getSheetContext, getProducts } = require("./sheetData");
 const { getOrdersContext } = require("./ordersData");
 
@@ -543,17 +544,40 @@ const LANG_LABELS = { zh: "中文", en: "英文 (English)", ms: "马来文 (Baha
  * 客户明确确认要下单时，AI 会调用 start_order 工具，这时返回 { type: "start_order", items }
  * 而不是普通文字，由调用方接管后续的下单流程。
  */
-async function getAiReply(userMessage, fromNumber, media) {
+// 【2026-11-24】Glowré 客人（在 glowreskin.online 验证过 WhatsApp）只用 Glowré 资料回，不介绍 Lumee 产品
+const glowreCache = new Map(); // 号码 -> { glowre, at }
+async function isGlowreCustomer(fromNumber) {
+  const hit = glowreCache.get(fromNumber);
+  if (hit && Date.now() - hit.at < 10 * 60 * 1000) return hit.glowre;
+  if (!PROCUREMENT_API_URL || !PROCUREMENT_API_KEY) return false;
   try {
-    const [sheetContext, ordersContext, voucherBalance] = await Promise.all([
+    const r = await fetch(`${PROCUREMENT_API_URL.replace(/\/$/, "")}/api/glowre-bot/whois`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${PROCUREMENT_API_KEY}` },
+      body: JSON.stringify({ from: fromNumber }),
+      signal: AbortSignal.timeout(5000),
+    });
+    const glowre = r.ok ? !!(await r.json()).glowre : false;
+    glowreCache.set(fromNumber, { glowre, at: Date.now() });
+    return glowre;
+  } catch (err) {
+    console.error("❌ 查 Glowré 客人失败：", err.message);
+    return false;
+  }
+}
+
+async function getAiReply(userMessage, fromNumber, media, brand = "lumee") {
+  try {
+    const glowre = brand === "glowre";
+    const [sheetContext, ordersContext, voucherBalance] = glowre ? ["", "", 0] : await Promise.all([
       getSheetContext(),
       getOrdersContext(fromNumber),
       checkVoucherBalance(fromNumber.replace(/^whatsapp:/i, "")),
     ]);
-    let systemPrompt = STORE_INFO;
+    let systemPrompt = glowre ? GLOWRE_INFO : STORE_INFO;
     if (sheetContext) systemPrompt += `\n\n${sheetContext}`;
     if (ordersContext) systemPrompt += `\n\n${ordersContext}`;
-    systemPrompt += voucherBalance > 0
+    if (!glowre) systemPrompt += voucherBalance > 0
       ? `\n\n【这位客户的购物金】已领取，目前还剩 RM${voucherBalance}。客户问优惠时要告诉他：每张订单满 RM${VOUCHER_MIN_ORDER} 下单会自动抵扣 RM${VOUCHER_DEDUCT_PER_USE}，不用另外输入什么。`
       : `\n\n【这位客户的购物金】目前没有可用余额（可能还没领取，也可能已经用完）。客户问优惠时可以告诉他：发送 LUMEE-GIFT 给我们就能领取 RM100 购物金（每个号码只能领一次，已经领过的会收到提示）。`;
     systemPrompt +=
@@ -581,7 +605,7 @@ async function getAiReply(userMessage, fromNumber, media) {
       max_tokens: 1000, // 300 太少，中文长一点的回复（例如购物金说明）会被拦腰截断
       system: systemPrompt,
       messages,
-      tools: [ORDER_TOOL, HANDOFF_TOOL],
+      tools: glowre ? [HANDOFF_TOOL] : [ORDER_TOOL, HANDOFF_TOOL],
     });
 
     const toolBlock = response.content.find((block) => block.type === "tool_use" && block.name === "start_order");
@@ -594,7 +618,7 @@ async function getAiReply(userMessage, fromNumber, media) {
     const handoffBlock = response.content.find((block) => block.type === "tool_use" && block.name === "handoff_to_human");
     if (handoffBlock) {
       const reply = String(handoffBlock.input.reply || "").trim() || HANDOFF_FALLBACK_REPLY[detectLang(userMessage)];
-      notifyHuman(fromNumber, handoffBlock.input.summary || "（AI 没写摘要）", historyText);
+      notifyHuman(fromNumber, (glowre ? "【Glowré 客人】" : "") + (handoffBlock.input.summary || "（AI 没写摘要）"), historyText);
       pushHistory(fromNumber, "user", historyText);
       pushHistory(fromNumber, "assistant", reply);
       return { type: "text", text: reply };
@@ -1216,6 +1240,28 @@ app.post("/webhook/whatsapp", validateTwilioRequest, async (req, res) => {
     return originalResSend(body);
   };
 
+  // 【2026-11-24】Glowré 网站验证码：GLOWRE-LOGIN 转给订货系统的 Glowré 模块拿码，不走 AI、不碰 Lumee 的登录
+  const glowreMatch = incomingMessage.trim().match(/^GLOWRE-LOGIN(?:-(ZH|EN|MS))?$/i);
+  if (glowreMatch) {
+    let reply = "Sorry, verification is busy right now. Please try again in a minute.";
+    try {
+      const r = await fetch(`${(PROCUREMENT_API_URL || "").replace(/\/$/, "")}/api/glowre-bot/otp`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${PROCUREMENT_API_KEY}` },
+        body: JSON.stringify({ from: fromNumber, lang: (glowreMatch[1] || "en").toLowerCase() }),
+        signal: AbortSignal.timeout(8000),
+      });
+      if (r.ok) reply = (await r.json()).reply || reply;
+      else console.error(`❌ Glowré 验证码：订货系统回 HTTP ${r.status}`);
+    } catch (err) {
+      console.error("❌ Glowré 验证码：连不上订货系统", err.message);
+    }
+    glowreCache.set(fromNumber, { glowre: true, at: Date.now() });
+    const twiml = new twilio.twiml.MessagingResponse();
+    twiml.message(reply);
+    return res.type("text/xml").send(twiml.toString());
+  }
+
   // 【新增】「查询 ZH…」开头：去订货运输系统查订单状态，不走 AI、不影响进行中的下单流程
   const orderQueryMatch = incomingMessage.trim().match(ORDER_QUERY_RE);
   if (orderQueryMatch) {
@@ -1254,6 +1300,17 @@ app.post("/webhook/whatsapp", validateTwilioRequest, async (req, res) => {
     } else {
       twiml.message(DEFAULT_REPLY);
     }
+    return res.type("text/xml").send(twiml.toString());
+  }
+
+  // Glowré 客人：不进 Lumee 跟进名单、不走 Lumee 下单流程，只用 Glowré 资料回
+  if (await isGlowreCustomer(fromNumber)) {
+    delete orderSessions[fromNumber];
+    const aiReply = await getAiReply(incomingMessage, fromNumber, media, "glowre");
+    const glowreText = (aiReply && aiReply.text) || "Hi! This is Glowré. You can shop at https://glowreskin.online 🧴";
+    console.log(`🤖 Glowré 回复：${glowreText}`);
+    const twiml = new twilio.twiml.MessagingResponse();
+    twiml.message(glowreText);
     return res.type("text/xml").send(twiml.toString());
   }
 
