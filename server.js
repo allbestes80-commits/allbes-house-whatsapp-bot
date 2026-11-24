@@ -236,7 +236,7 @@ const LUMEE_HANDOFF_TOKEN = process.env.LUMEE_HANDOFF_TOKEN;
 const HANDOFF_COOLDOWN_MS = 2 * 60 * 60 * 1000; // 同一个客人 2 小时内只通知一次，免得一直吵人工客服
 const lastHandoffAt = {};
 
-async function notifyHuman(fromNumber, summary, lastMessage) {
+async function notifyHuman(fromNumber, summary, lastMessage, brand = "lumee") {
   const phone = fromNumber.replace(/^whatsapp:/i, "");
   if (Date.now() - (lastHandoffAt[phone] || 0) < HANDOFF_COOLDOWN_MS) return;
   lastHandoffAt[phone] = Date.now();
@@ -245,11 +245,11 @@ async function notifyHuman(fromNumber, summary, lastMessage) {
     return;
   }
   const text =
-    `🙋 Lumee 客人要人工处理\n` +
+    (brand === "glowre" ? `🧴 Glowré 客人要人工处理\n` : `🙋 Lumee 客人要人工处理\n`) +
     `客人：${phone}（点这里回他：https://wa.me/${phone.replace(/\D/g, "")}）\n` +
     `客人说：${String(lastMessage || "").slice(0, 300)}\n` +
     `要你做：${summary}\n` +
-    `完整对话在 Google 表格「聊天记录」。`;
+    (brand === "glowre" ? `完整对话在订货系统「Glowré → WhatsApp」。` : `完整对话在 Google 表格「聊天记录」。`);
   try {
     const r = await fetch(LUMEE_HANDOFF_URL, {
       method: "POST",
@@ -618,7 +618,7 @@ async function getAiReply(userMessage, fromNumber, media, brand = "lumee") {
     const handoffBlock = response.content.find((block) => block.type === "tool_use" && block.name === "handoff_to_human");
     if (handoffBlock) {
       const reply = String(handoffBlock.input.reply || "").trim() || HANDOFF_FALLBACK_REPLY[detectLang(userMessage)];
-      notifyHuman(fromNumber, (glowre ? "【Glowré 客人】" : "") + (handoffBlock.input.summary || "（AI 没写摘要）"), historyText);
+      notifyHuman(fromNumber, handoffBlock.input.summary || "（AI 没写摘要）", historyText, glowre ? "glowre" : "lumee");
       pushHistory(fromNumber, "user", historyText);
       pushHistory(fromNumber, "assistant", reply);
       return { type: "text", text: reply };
@@ -913,6 +913,21 @@ async function touchFollowUp(phone, name, stage, lang, optIn) {
  */
 async function logChatMessage(phone, direction, text) {
   if (!phone || !text) return;
+  // Glowré 客人的聊天存进订货系统（Glowré → WhatsApp 页），不进 Lumee 的 Google 表格
+  if (/^GLOWRE-LOGIN/i.test(String(text).trim()) || (await isGlowreCustomer(`whatsapp:${phone}`))) {
+    const plain = String(text).replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&amp;/g, "&");
+    try {
+      await fetch(`${(PROCUREMENT_API_URL || "").replace(/\/$/, "")}/api/glowre-bot/log`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${PROCUREMENT_API_KEY}` },
+        body: JSON.stringify({ from: phone, direction: direction === "机器人" ? "bot" : "in", text: plain }),
+        signal: AbortSignal.timeout(5000),
+      });
+    } catch (err) {
+      console.error("⚠️ 记录 Glowré 聊天失败：", err.message);
+    }
+    return;
+  }
   try {
     await fetch(ORDER_LOG_URL, {
       method: "POST",
