@@ -545,11 +545,12 @@ const LANG_LABELS = { zh: "中文", en: "英文 (English)", ms: "马来文 (Baha
  * 而不是普通文字，由调用方接管后续的下单流程。
  */
 // 【2026-11-24】Glowré 客人（在 glowreskin.online 验证过 WhatsApp）只用 Glowré 资料回，不介绍 Lumee 产品
-const glowreCache = new Map(); // 号码 -> { glowre, at }
-async function isGlowreCustomer(fromNumber) {
-  const hit = glowreCache.get(fromNumber);
-  if (hit && Date.now() - hit.at < 10 * 60 * 1000) return hit.glowre;
-  if (!PROCUREMENT_API_URL || !PROCUREMENT_API_KEY) return false;
+// 共用号码：每个号码是哪个牌子（glowre / lumee / asked=问过等回答 / null=第一次来），记在订货系统
+const brandCache = new Map(); // 号码 -> { brand, at }
+async function getBrand(fromNumber) {
+  const hit = brandCache.get(fromNumber);
+  if (hit && Date.now() - hit.at < 10 * 60 * 1000) return hit.brand;
+  if (!PROCUREMENT_API_URL || !PROCUREMENT_API_KEY) return "lumee";
   try {
     const r = await fetch(`${PROCUREMENT_API_URL.replace(/\/$/, "")}/api/glowre-bot/whois`, {
       method: "POST",
@@ -557,14 +558,65 @@ async function isGlowreCustomer(fromNumber) {
       body: JSON.stringify({ from: fromNumber }),
       signal: AbortSignal.timeout(5000),
     });
-    const glowre = r.ok ? !!(await r.json()).glowre : false;
-    glowreCache.set(fromNumber, { glowre, at: Date.now() });
-    return glowre;
+    if (!r.ok) return "lumee";
+    const brand = (await r.json()).brand ?? null;
+    brandCache.set(fromNumber, { brand, at: Date.now() });
+    return brand;
   } catch (err) {
-    console.error("❌ 查 Glowré 客人失败：", err.message);
-    return false;
+    console.error("❌ 查客人是哪个牌子失败：", err.message);
+    return "lumee"; // 查不到就照旧当 Lumee
   }
 }
+async function isGlowreCustomer(fromNumber) {
+  return (await getBrand(fromNumber)) === "glowre";
+}
+async function setBrand(fromNumber, brand) {
+  brandCache.set(fromNumber, { brand, at: Date.now() });
+  try {
+    await fetch(`${(PROCUREMENT_API_URL || "").replace(/\/$/, "")}/api/glowre-bot/brand`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${PROCUREMENT_API_KEY}` },
+      body: JSON.stringify({ from: fromNumber, brand }),
+      signal: AbortSignal.timeout(5000),
+    });
+  } catch (err) {
+    console.error("❌ 记录客人牌子失败：", err.message);
+  }
+}
+
+// 客人的话里一看就知道是哪个牌子
+const GLOWRE_WORDS = /glowr[eé]|shower ?oil|沐浴油|minyak mandian|变牛奶|glowreskin/i;
+const LUMEE_WORDS = /lumee|代购|daigou|护手霜|hand ?cream|洗发|shampoo|沐浴露|shower ?gel|薰衣草|lavender|乳木果|shea|马鞭草|verbena/i;
+function keywordBrand(text) {
+  const g = GLOWRE_WORDS.test(text), l = LUMEE_WORDS.test(text);
+  return g && !l ? "glowre" : l && !g ? "lumee" : null;
+}
+// 问过之后客人的回答还看不出来：让 AI 判断一次，判断不了就当 Lumee（跟以前一样）
+async function aiPickBrand(text) {
+  try {
+    const r = await anthropic.messages.create({
+      model: AI_MODEL,
+      max_tokens: 5,
+      system:
+        "共用一个 WhatsApp 的两个牌子：\n" +
+        "glowre = Glowré，只卖金色沐浴油（遇水变牛奶）、毛巾、旅行装，网站 glowreskin.online。\n" +
+        "lumee = Lumee Store，普罗旺斯植物护肤：沐浴露、洗发水、护手霜、身体护理、香氛，也做代购。\n" +
+        "根据客人的话判断他要找哪个，只回一个词：glowre、lumee 或 unknown。",
+      messages: [{ role: "user", content: String(text).slice(0, 500) }],
+    });
+    const t = (r.content.find((b) => b.type === "text")?.text || "").toLowerCase();
+    return t.includes("glowre") ? "glowre" : t.includes("lumee") ? "lumee" : null;
+  } catch (err) {
+    console.error("❌ AI 判断牌子失败：", err.message);
+    return null;
+  }
+}
+// 第一次来的客人：先问想了解什么、从哪里知道我们，不先说是哪个牌子（老板 2026-11-24）
+const WELCOME_ASK = {
+  zh: "你好，欢迎！😊 想了解哪一类产品呢？例如沐浴油、沐浴露、洗发水、护手霜……\n也可以告诉我你是在哪里看到我们的（网站、TikTok、Shopee、朋友介绍等），我好帮你介绍。",
+  en: "Hi, welcome! 😊 What kind of product are you looking for? For example shower oil, shower gel, shampoo, hand cream…\nYou can also tell me where you found us (website, TikTok, Shopee, a friend…) so I can help you better.",
+  ms: "Hai, selamat datang! 😊 Produk jenis apa yang anda cari? Contohnya minyak mandian, sabun mandi, syampu, krim tangan…\nBoleh juga beritahu di mana anda jumpa kami (laman web, TikTok, Shopee, kawan…) supaya saya boleh bantu.",
+};
 
 async function getAiReply(userMessage, fromNumber, media, brand = "lumee") {
   try {
@@ -631,6 +683,8 @@ async function getAiReply(userMessage, fromNumber, media, brand = "lumee") {
       const cut = Math.max(...["。", "！", "？", "!", "?", ".", "\n"].map((p) => replyText.lastIndexOf(p)));
       if (cut > replyText.length * 0.5) replyText = replyText.slice(0, cut + 1).trim();
     }
+    // WhatsApp 粗体只认一个星号，标题符号也不认
+    if (replyText) replyText = replyText.replace(/\*\*(.+?)\*\*/g, "*$1*").replace(/^#{1,6}\s*/gm, "");
     if (replyText) {
       pushHistory(fromNumber, "user", historyText);
       pushHistory(fromNumber, "assistant", replyText);
@@ -1271,7 +1325,7 @@ app.post("/webhook/whatsapp", validateTwilioRequest, async (req, res) => {
     } catch (err) {
       console.error("❌ Glowré 验证码：连不上订货系统", err.message);
     }
-    glowreCache.set(fromNumber, { glowre: true, at: Date.now() });
+    brandCache.set(fromNumber, { brand: "glowre", at: Date.now() });
     const twiml = new twilio.twiml.MessagingResponse();
     twiml.message(reply);
     return res.type("text/xml").send(twiml.toString());
@@ -1295,6 +1349,7 @@ app.post("/webhook/whatsapp", validateTwilioRequest, async (req, res) => {
     const code = generateOtpCode();
     otpSessions[phoneKey] = { code, expiresAt: Date.now() + OTP_TTL_MS, phone: fromNumber.replace(/^whatsapp:/i, "") };
     console.log(`🔑 已生成登录验证码给 ${fromNumber}`);
+    setBrand(fromNumber, "lumee"); // 从 Lumee 网站来的
     const twiml = new twilio.twiml.MessagingResponse();
     twiml.message(OTP_REPLY_TEXT[lang](code));
     return res.type("text/xml").send(twiml.toString());
@@ -1305,6 +1360,7 @@ app.post("/webhook/whatsapp", validateTwilioRequest, async (req, res) => {
   if (giftMatch) {
     const lang = ["zh", "en", "ms"].includes((giftMatch[2] || "").toLowerCase()) ? giftMatch[2].toLowerCase() : "en";
     const phone = fromNumber.replace(/^whatsapp:/i, "");
+    setBrand(fromNumber, "lumee"); // 扫 Lumee 的 QR 码来的
     const data = await voucherAction("voucherBind", { phone });
     const twiml = new twilio.twiml.MessagingResponse();
     if (data && data.status === "bound") {
@@ -1318,8 +1374,25 @@ app.post("/webhook/whatsapp", validateTwilioRequest, async (req, res) => {
     return res.type("text/xml").send(twiml.toString());
   }
 
+  // 第一次来 / 问过还没答的客人：先分清楚是哪个牌子
+  let brand = await getBrand(fromNumber);
+  if (brand !== "glowre" && brand !== "lumee") {
+    let decided = keywordBrand(incomingMessage);
+    if (!decided && brand === "asked") decided = (await aiPickBrand(incomingMessage)) || "lumee";
+    if (!decided && (orderSessions[fromNumber] || (conversationHistory[fromNumber] || []).length || (await getOrdersContext(fromNumber)))) decided = "lumee";
+    if (decided) {
+      await setBrand(fromNumber, decided);
+      brand = decided;
+    } else {
+      await setBrand(fromNumber, "asked");
+      const twiml = new twilio.twiml.MessagingResponse();
+      twiml.message(WELCOME_ASK[detectLang(incomingMessage)]);
+      return res.type("text/xml").send(twiml.toString());
+    }
+  }
+
   // Glowré 客人：不进 Lumee 跟进名单、不走 Lumee 下单流程，只用 Glowré 资料回
-  if (await isGlowreCustomer(fromNumber)) {
+  if (brand === "glowre") {
     delete orderSessions[fromNumber];
     const aiReply = await getAiReply(incomingMessage, fromNumber, media, "glowre");
     const glowreText = (aiReply && aiReply.text) || "Hi! This is Glowré. You can shop at https://glowreskin.online 🧴";
