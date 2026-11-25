@@ -1395,7 +1395,23 @@ app.post("/webhook/whatsapp", validateTwilioRequest, async (req, res) => {
   if (brand === "glowre") {
     delete orderSessions[fromNumber];
     const aiReply = await getAiReply(incomingMessage, fromNumber, media, "glowre");
-    const glowreText = (aiReply && aiReply.text) || "Hi! This is Glowré. You can shop at https://glowreskin.online 🧴";
+    let glowreText = (aiReply && aiReply.text) || "Hi! This is Glowré. You can shop at https://glowreskin.online 🧴";
+    // 网址换成这个客人的专属网址（一次性），点进去付款不用再验证；拿不到就照发普通网址
+    const SITE_RE = /https:\/\/glowreskin\.online\/?(?![\w\/#?=&%])/g;
+    if (SITE_RE.test(glowreText)) {
+      try {
+        const lr = await fetch(`${(PROCUREMENT_API_URL || "").replace(/\/$/, "")}/api/glowre-bot/link`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${PROCUREMENT_API_KEY}` },
+          body: JSON.stringify({ from: fromNumber }),
+          signal: AbortSignal.timeout(6000),
+        });
+        const personal = lr.ok ? (await lr.json()).url : null;
+        if (personal) glowreText = glowreText.replace(SITE_RE, personal);
+      } catch (err) {
+        console.error("❌ Glowré 专属网址：", err.message);
+      }
+    }
     console.log(`🤖 Glowré 回复：${glowreText}`);
     const twiml = new twilio.twiml.MessagingResponse();
     twiml.message(glowreText);
