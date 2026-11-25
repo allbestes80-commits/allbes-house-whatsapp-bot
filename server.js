@@ -249,12 +249,13 @@ async function notifyHuman(fromNumber, summary, lastMessage, brand = "lumee") {
     `客人：${phone}（点这里回他：https://wa.me/${phone.replace(/\D/g, "")}）\n` +
     `客人说：${String(lastMessage || "").slice(0, 300)}\n` +
     `要你做：${summary}\n` +
-    (brand === "glowre" ? `完整对话在订货系统「Glowré → WhatsApp」。` : `完整对话在 Google 表格「聊天记录」。`);
+    (brand === "glowre" ? `完整对话在订货系统「Glowré → WhatsApp」。` : `完整对话在 Google 表格「聊天记录」。`) +
+    `\n👉 直接「回复」这条消息，写你要怎么处理，AI 会照做回复客人。`;
   try {
     const r = await fetch(LUMEE_HANDOFF_URL, {
       method: "POST",
       headers: { "Content-Type": "application/json", "X-Lumee-Token": LUMEE_HANDOFF_TOKEN },
-      body: JSON.stringify({ text }),
+      body: JSON.stringify({ text, phone, brand, customer_msg: String(lastMessage || "").slice(0, 500), summary: String(summary || "").slice(0, 500) }),
     });
     if (!r.ok) console.error(`⚠️ 转人工通知失败：HTTP ${r.status}`);
     else console.log(`🙋 已通知人工客服：${phone}`);
@@ -1246,6 +1247,47 @@ app.post("/api/toyyibpay-callback", bodyParser.text({ type: () => true }), async
 // 网站只需要 POST { code }——按验证码本身查找会话，不要求客户另外填的号码
 // 跟他 WhatsApp 实际登录的号码一致（这两个经常对不上，之前就是这样导致验证一直失败）。
 // 验证码本身是 6 位随机数 + 10 分钟有效期 + 一次性使用，作为凭证已经足够。
+// 【2026-11-25】老板在 Telegram「回复」转人工的那条消息 → 总部转来这里 → AI 照老板的指示写好回复，用 WhatsApp 发给客人。
+// 钱的事（退款、转账、金额）先不发，把草稿还给老板确认（approvedText 才是老板确认过的草稿）。
+const MONEY_RE = /退款|退钱|退回|赔|补偿|转账|转给|refund|compensat|reimburs|credit|voucher|购物金|RM\s?\d|\d+\s?(令吉|块|ringgit)/i;
+app.post("/api/boss-reply", async (req, res) => {
+  const given = Buffer.from(String(req.get("X-Lumee-Token") || ""));
+  const want = Buffer.from(String(LUMEE_HANDOFF_TOKEN || ""));
+  if (!want.length || given.length !== want.length || !crypto.timingSafeEqual(given, want)) return res.status(403).json({ error: "forbidden" });
+  const { phone, brand, instruction, customer_msg, summary, approvedText } = req.body || {};
+  const digits = String(phone || "").replace(/\D/g, "");
+  if (!digits || (!instruction && !approvedText)) return res.status(400).json({ error: "missing phone/instruction" });
+  const to = `whatsapp:+${digits}`;
+  try {
+    let text = approvedText ? String(approvedText) : "";
+    if (!text) {
+      const info = brand === "glowre" ? GLOWRE_INFO : STORE_INFO;
+      const recent = (conversationHistory[to] || []).map((m) => `${m.role === "user" ? "客人" : "我们"}：${typeof m.content === "string" ? m.content : "(图片)"}`).join("\n");
+      const r = await anthropic.messages.create({
+        model: AI_MODEL,
+        max_tokens: 500,
+        system:
+          info +
+          "\n\n【现在的任务】老板刚看了一个客人的问题，做了决定。你替老板用 WhatsApp 回这个客人。\n" +
+          "- 用客人说话的语言（看「客人最后说」的语言）。\n- 简短、亲切、像真人。\n- 只说老板指示里有的内容，不要多承诺，不要自己加退款、赔偿、折扣。\n- 不要提「转人工」「老板」「AI」。\n- 只输出要发给客人的那段话，不要加任何说明。",
+        messages: [{ role: "user", content: `最近对话：\n${recent || "(没有记录)"}\n\n客人最后说：${customer_msg || ""}\n我们转人工时写的原因：${summary || ""}\n\n老板的指示：${instruction}` }],
+      });
+      text = (r.content.find((b) => b.type === "text")?.text || "").trim();
+      if (!text) return res.status(502).json({ error: "AI 没写出内容" });
+      if (MONEY_RE.test(instruction) || MONEY_RE.test(text)) return res.json({ sent: false, draft: text, reason: "money" });
+    }
+    await twilioClient.messages.create({ from: process.env.TWILIO_WHATSAPP_FROM, to, body: text });
+    pushHistory(to, "assistant", text);
+    logChatMessage(`+${digits}`, "机器人", text);
+    console.log(`📲 老板指示已回复客人 ${to}`);
+    res.json({ sent: true, text });
+  } catch (err) {
+    // 最常见：客人超过 24 小时没发消息，WhatsApp 不让自由发话
+    console.error("❌ 老板指示回复失败：", err.message);
+    res.json({ sent: false, error: String(err.message || err).slice(0, 200) });
+  }
+});
+
 app.post("/api/otp-verify", (req, res) => {
   const { code } = req.body || {};
   if (!code) {
